@@ -43,11 +43,14 @@ Personal pattern lists (the gate's blocked names, emails, paths) are
 **never committed anywhere**. This repo contains only the mechanism that
 consumes them. To make yours:
 
-1. Copy `templates/patterns.example.txt` to **`patterns.txt` in the root
+1. Run **`repo-kit setup`** — a short questionnaire (your emails,
+   domains, handles, infrastructure names; it detects your username for
+   the machine-path patterns) that writes the file for you, correctly
+   escaped and formatted. Every prompt has a matching flag, so the same
+   setup is scriptable. Or, if you prefer by hand: copy
+   `templates/patterns.example.txt` to **`patterns.txt` in the root
    of your local tooling checkout** and replace the examples with your
-   own values (the template's comments say what to include: your email
-   addresses/domains, handles, machine paths like `/Users/you/`, tailnet
-   suffixes, cloud project and drive names, key fingerprints).
+   own values (the template's comments say what to include).
 2. That's the whole setup. The tooling repo ships a `.gitignore` that
    ignores `patterns.txt`, so it **cannot be committed or pushed** from
    the tooling checkout, and because it is untracked, updating the
