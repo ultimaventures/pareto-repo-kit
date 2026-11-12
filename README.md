@@ -70,10 +70,25 @@ works, so a silent no-op can't masquerade as a pass.
 ## Layout
 
 - `tools/` — renderer + gate checks + `checks/` dispatcher scripts
+  (pattern/format, gitleaks, file hygiene, shellcheck)
 - `.github/workflows/` — the reusable workflows projects call
 - `templates/` — in-repo seeds + thin caller workflows + gitignore block
 - `hooks/` — the pre-push dispatcher
-- `install/repo-kit` — the installer (`init` / `hooks`)
+- `install/repo-kit` — the installer (`init` / `hooks` / `setup` / `env`)
+
+File hygiene uses the maintained **pre-commit-hooks** package where it
+is installed (pinned in the dev environment / CI), falling back to a
+stdlib subset (`tools/file_hygiene.py`) so the check degrades instead of
+vanishing. No check in this toolkit ever downloads anything at run time:
+binaries are baked into the environment with pinned versions, and a
+missing binary means a loud skip, never a fetch.
+
+`repo-kit env` prints a tooling status report (which tools are present,
+at what version; whether patterns.txt exists) and, with
+`--hooks-root DIR`, installs/refreshes hooks in every git repo under
+DIR. It is idempotent and fail-open, designed to be called from a dev
+container's entrypoint so a fresh container starts with hooks already in
+place.
 
 Versioning: git tags (`v0.1.0`, …). Caller workflows pin a tag; the
 renderer and checks are stdlib-only Python, no dependencies.
