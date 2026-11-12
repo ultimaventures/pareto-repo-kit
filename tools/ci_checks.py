@@ -82,6 +82,7 @@ def main(argv=None):
 
     pats = load_patterns(args.patterns)
     if pats:
+        print(f"ci_checks: pattern list loaded ({len(pats)} patterns)")
         diff = git(repo, "diff", args.range)
         for sha, subject, body in commits:
             for raw, rx in pats:

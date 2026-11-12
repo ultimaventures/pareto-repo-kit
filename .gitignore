@@ -1,0 +1,9 @@
+# YOUR private pattern list lives at the tooling checkout root as
+# patterns.txt (copied from templates/patterns.example.txt). It is a map
+# of what you want hidden — it must never be committed, here or anywhere.
+patterns.txt
+patterns-*.local.txt
+*.local.txt
+
+# Renderer output if run against this repo itself
+_site/

@@ -37,13 +37,32 @@ distributed here — they are pinned and installed by the development
 environment (e.g. a dev container image) like any other dev tool. This
 repo distributes the *wiring*: scripts, workflows, templates, hooks.
 
-## The one hard rule
+## The one hard rule — and your pattern list
 
 Personal pattern lists (the gate's blocked names, emails, paths) are
-**never** in this repo or any project repo. CI receives them as a
-repository secret (`GATE_PATTERNS`); local hooks read them from a local
-file (`GATE_PATTERNS_FILE`). This repo contains only the mechanism that
-consumes them.
+**never committed anywhere**. This repo contains only the mechanism that
+consumes them. To make yours:
+
+1. Copy `templates/patterns.example.txt` to **`patterns.txt` in the root
+   of your local tooling checkout** and replace the examples with your
+   own values (the template's comments say what to include: your email
+   addresses/domains, handles, machine paths like `/Users/you/`, tailnet
+   suffixes, cloud project and drive names, key fingerprints).
+2. That's the whole setup. The tooling repo ships a `.gitignore` that
+   ignores `patterns.txt`, so it **cannot be committed or pushed** from
+   the tooling checkout, and because it is untracked, updating the
+   tooling (`git pull`) can never overwrite it. The local checks find it
+   automatically at that location; `GATE_PATTERNS_FILE` can point
+   elsewhere if you prefer.
+3. For CI, paste the file's contents into a secret named `GATE_PATTERNS`
+   in each project repo. Same list, second home — the secret is the CI
+   mirror, the local file is the original.
+
+Never put `patterns.txt` inside a *project* repo, even ignored: the list
+is a map of what you want hidden, and project repos are the things being
+published. If a check ever reports "pattern tier skipped", the list
+wasn't found — the check prints how many patterns it loaded when it
+works, so a silent no-op can't masquerade as a pass.
 
 ## Layout
 

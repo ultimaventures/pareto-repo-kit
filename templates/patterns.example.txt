@@ -1,0 +1,70 @@
+# patterns.example.txt — TEMPLATE for your private pattern list.
+#
+# HOW THIS WORKS
+#   1. Copy this file to `patterns.txt` IN YOUR LOCAL TOOLING CHECKOUT
+#      (the root of your repo-tooling clone — NOT inside a project repo).
+#      The tooling repo's own .gitignore ignores `patterns.txt`, so it
+#      cannot be committed or pushed from there, and updating the tooling
+#      (git pull) never touches an untracked, ignored file — your list
+#      cannot be overwritten by the template or by an update.
+#   2. Replace the commented examples below with YOUR values, one regular
+#      expression per line. Lines starting with # are comments. Matching
+#      is case-insensitive.
+#   3. The checks find it automatically at that location. To keep it
+#      somewhere else instead, point the environment variable at it:
+#          export GATE_PATTERNS_FILE=/path/to/patterns.txt
+#   4. For CI, paste the same file's contents into a repository secret
+#      named GATE_PATTERNS (per project repo). The list itself is
+#      sensitive — it is a map of what you want hidden — so it belongs in
+#      secrets and local files only, never in any committed file.
+#
+# WHAT TO INCLUDE (recommendations — instance identifiers, the things
+# that are unique to YOUR machines/accounts and have no business in a
+# public repo):
+#
+#   * Email addresses that are yours: your personal addresses, and
+#     catch-alls for domains you own. Many people block their whole
+#     webmail domain for their repos, e.g.:
+#         [\w.+-]+@gmail\.com
+#         [\w.+-]+@(example\.com|mybusiness\.org)
+#   * Usernames and handles that identify you across services:
+#         my\.handle
+#         octocat-style-username
+#   * Paths on your machines ("you" = your OS username):
+#         /Users/you/
+#         /home/you/
+#         C:\\Users\\you\\
+#   * Hostnames and private-network names:
+#         [a-z0-9-]+\.ts\.net          (Tailscale tailnet names)
+#         myserver\.local
+#   * Names of things in your infrastructure: cloud project IDs, sync
+#     remote/drive names, bucket names, server nicknames:
+#         my-cloud-project-id
+#         drive-nickname
+#   * Public-key fingerprints that act as identifiers (e.g. a sops age
+#     recipient — the key is public, but it is uniquely YOURS):
+#         age1[a-z0-9]{58}
+#
+# WHAT *NOT* TO INCLUDE
+#   * Secrets themselves — API keys, tokens, passwords. A pattern list
+#     is not a secret scanner; gitleaks (run alongside) detects secret
+#     formats generically.
+#   * Common words, ordinary first names, your town, generic hardware
+#     models — in an ONGOING list they false-positive on legitimate
+#     prose. (A one-time, aggressive cleanup list is a different tool
+#     for a different day.)
+#   * Anything with an `entropy` setting if you port these to gitleaks
+#     rules — identifiers are low-entropy by nature and would be
+#     filtered out.
+#
+# SYNTAX NOTES
+#   * These are Python-flavored regexes (the checker uses `re`,
+#     case-insensitive). Keep them simple: escape dots (\.), prefer
+#     word boundaries (\b) around short tokens, and test a new pattern
+#     by running a check on a scratch commit containing the value.
+#   * A pattern that fires on something legitimate is allowlisted by
+#     narrowing the pattern — never by deleting the category.
+#
+# EXAMPLE (delete and replace with your own):
+# [\w.+-]+@gmail\.com
+# /Users/yourname/
