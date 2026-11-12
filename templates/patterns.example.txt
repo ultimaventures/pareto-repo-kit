@@ -65,6 +65,8 @@
 #   * A pattern that fires on something legitimate is allowlisted by
 #     narrowing the pattern — never by deleting the category.
 #
-# EXAMPLE (delete and replace with your own):
-# [\w.+-]+@gmail\.com
-# /Users/yourname/
+# ACTIVE STARTER LINES (keep, replace, extend — the second one is a
+# placeholder until you put your real username in it; a copied template
+# should visibly work, and the check prints how many patterns it loaded):
+[\w.+-]+@gmail\.com
+/Users/yourname/
