@@ -1,0 +1,52 @@
+name: Dashboard (reusable)
+
+# Reusable workflow: renders the caller's public status dashboard from the
+# CALLER repo only (its commit log, adr/, PLAN.md, project.public.yaml)
+# using the renderer from the tooling repo, and publishes it to GitHub
+# Pages. The caller repo supplies the thin caller workflow (see
+# templates/workflows/dashboard.yml) with pages permissions.
+# Requires on the caller repo: Settings -> Pages -> Source = GitHub Actions.
+
+on:
+  workflow_call:
+    inputs:
+      tooling_repo:
+        description: "owner/name of this tooling repo"
+        type: string
+        default: "ultimaventures/repo-tooling"
+      tooling_ref:
+        description: "tooling version tag to render with"
+        type: string
+        default: "v0.1.0"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout caller repo (full history — the feed IS the log)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tooling_repo }}
+          ref: ${{ inputs.tooling_ref }}
+          path: .repo-tooling
+      - name: Render dashboard
+        run: >
+          python3 .repo-tooling/tools/render_dashboard.py
+          --repo . --out-dir _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,69 @@
+name: Gate (reusable)
+
+# Reusable workflow: the two-tier pre-public gate for the CALLER repo.
+#   HARD: gitleaks secret scan (full history, redacted) + personal-pattern
+#         scan of commit messages/diffs (tools/ci_checks.py). The pattern
+#         list comes from the caller's GATE_PATTERNS repository secret and
+#         is never stored in any repo.
+#   SOFT: commit-format / plan-step reminders (warnings, never fail).
+# Project test suites are NOT part of this workflow — they belong to the
+# caller repo's own workflow.
+# The caller must pass the secret: `secrets: inherit` or GATE_PATTERNS
+# explicitly (see templates/workflows/gate.yml).
+
+on:
+  workflow_call:
+    inputs:
+      tooling_repo:
+        type: string
+        default: "ultimaventures/repo-tooling"
+      tooling_ref:
+        type: string
+        default: "v0.1.0"
+    secrets:
+      GATE_PATTERNS:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tooling_repo }}
+          ref: ${{ inputs.tooling_ref }}
+          path: .repo-tooling
+      - name: Install gitleaks (pinned; >= 8.30.2 fixes CVE-2026-124039)
+        run: |
+          curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.30.2/gitleaks_8.30.2_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Secret scan (full history, redacted)
+        run: gitleaks git --redact --verbose .
+      - name: Personal-pattern + format checks
+        env:
+          GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}
+        run: |
+          if [ -n "$GATE_PATTERNS" ]; then
+            printf '%s\n' "$GATE_PATTERNS" > /tmp/gate-patterns.txt
+            export GATE_PATTERNS_FILE=/tmp/gate-patterns.txt
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.base_ref }}..HEAD"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${{ github.event.before }}..HEAD"
+          else
+            RANGE="HEAD~1..HEAD"
+          fi
+          # Exits 1 only on hard pattern failures; format/plan items are
+          # warnings and never fail the job.
+          python3 .repo-tooling/tools/ci_checks.py --repo . --range "$RANGE"
