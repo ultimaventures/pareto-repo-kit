@@ -36,6 +36,14 @@ Machine-level binaries (gitleaks, future linters/formatters) are **not**
 distributed here — they are pinned and installed by the development
 environment (e.g. a dev container image) like any other dev tool. This
 repo distributes the *wiring*: scripts, workflows, templates, hooks.
+The binaries the local checks call are declared in
+**`tools/dependencies.txt`** — the dependency manifest (name, kind,
+version, release checksums for binaries). It is the single source of
+truth environments pin from: when a check gains an external
+dependency, the manifest entry lands in the same change, and
+environments that compare the manifest against what they installed
+(devbox does, at session start) surface any drift instead of letting
+the check silently skip.
 
 ## The one hard rule — and your pattern list
 
@@ -67,10 +75,22 @@ published. If a check ever reports "pattern tier skipped", the list
 wasn't found — the check prints how many patterns it loaded when it
 works, so a silent no-op can't masquerade as a pass.
 
+**Inside devbox the list never enters the container at all.** When
+`REPOKIT_PATTERNS_URL` + `REPOKIT_PATTERNS_TOKEN` are set (dev-agent
+sets them per session), `ci_checks.py` runs in *service mode*: it
+POSTs the content it would have scanned — commit messages plus the
+diff — to a scan service on the host, which answers pass/fail plus
+category names only. Unreachable service, timeout, or a host with no
+patterns configured all fail **closed** (the push is blocked; pushing
+from a host terminal, where the list is readable directly, is the
+escape hatch). With the variables absent, local behaviour is
+unchanged.
+
 ## Layout
 
 - `tools/` — renderer + gate checks + `checks/` dispatcher scripts
-  (pattern/format, gitleaks, file hygiene, shellcheck)
+  (pattern/format, gitleaks, file hygiene, shellcheck) +
+  `dependencies.txt`, the external-tool dependency manifest
 - `.github/workflows/` — the reusable workflows projects call
 - `templates/` — in-repo seeds + thin caller workflows + gitignore block
 - `hooks/` — the pre-push dispatcher

@@ -6,7 +6,7 @@ set -u
 RANGE="${1:-HEAD~1..HEAD}"
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "gitleaks not installed — secret scan SKIPPED locally (CI runs it)."
-  echo "Install gitleaks >= 8.30.2 to close this gap."
+  echo "Install gitleaks >= 8.30.1 to close this gap."
   exit 0
 fi
 exec gitleaks git --redact --log-opts="$RANGE" .

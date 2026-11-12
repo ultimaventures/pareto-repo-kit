@@ -20,13 +20,26 @@ The patterns file defaults to $GATE_PATTERNS_FILE. With no patterns file,
 the pattern tier is skipped with a notice (secrets scanning is gitleaks'
 job in the same workflow; this tier covers personal patterns in messages
 and diffs).
+
+SERVICE MODE (devbox): when REPOKIT_PATTERNS_URL and
+REPOKIT_PATTERNS_TOKEN are both set, the pattern list never enters
+this environment at all. The content this tier would have scanned
+locally — commit subjects/bodies plus the diff for the range — is
+POSTed to the host-side pattern service, which answers pass/fail
+plus category NAMES only (never pattern text, never matched text).
+An unreachable service, a timeout, or an unparseable reply FAILS
+CLOSED: a push that cannot be pattern-checked is a blocked push.
+With the variables absent, local behaviour is exactly as above.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render_dashboard import SUBJECT_RX, parse_plan  # noqa: E402
@@ -57,6 +70,47 @@ def load_patterns(path):
     return pats
 
 
+def pattern_service_scan(repo, range_, commits):
+    """Service-mode pattern check (see the module docstring).
+
+    Returns ("ok", []) | ("fail", [category, ...]) |
+    ("unavailable", []). The payload is the same content the local
+    tier scans: every commit subject/body in the range, then the
+    range's unified diff.
+    """
+    url = os.environ["REPOKIT_PATTERNS_URL"].rstrip("/") + "/scan"
+    token = os.environ["REPOKIT_PATTERNS_TOKEN"]
+    parts = [subject + "\n" + body for _sha, subject, body in commits]
+    parts.append(git(repo, "diff", range_))
+    payload = "\n".join(parts).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"X-Devbox-Token": token,
+                 "Content-Type": "text/plain; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # A JSON error body still carries category names (e.g. a 413
+        # "too-large"); anything else is an unavailable service.
+        try:
+            data = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            return ("unavailable", [])
+        cats = data.get("categories") if isinstance(data, dict) else None
+        if cats and cats != ["forbidden"]:
+            return ("fail", [str(c) for c in cats])
+        return ("unavailable", [])
+    except Exception:
+        return ("unavailable", [])
+    if isinstance(data, dict) and data.get("ok"):
+        return ("ok", [])
+    cats = data.get("categories") if isinstance(data, dict) else None
+    if cats:
+        return ("fail", [str(c) for c in cats])
+    return ("unavailable", [])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", default=".")
@@ -80,7 +134,41 @@ def main(argv=None):
         print("ci_checks: no commits in range — nothing to check")
         return 0
 
-    pats = load_patterns(args.patterns)
+    # Service mode takes precedence: with the service variables set,
+    # the pattern list is on the host by design and must not be read
+    # locally even if a copy happens to be visible.
+    service_handled = False
+    if os.environ.get("REPOKIT_PATTERNS_URL") and \
+            os.environ.get("REPOKIT_PATTERNS_TOKEN"):
+        service_handled = True
+        status, categories = pattern_service_scan(repo, args.range,
+                                                  commits)
+        if status == "ok":
+            print("ci_checks: pattern service: OK (the pattern list "
+                  "stayed on the host)")
+        elif status == "fail":
+            for cat in categories:
+                failures += 1
+                if cat == "no-patterns-configured":
+                    annotate(
+                        "error",
+                        "pattern service has no patterns configured "
+                        "— push blocked; add patterns.txt on the host "
+                        "or push from a Mac terminal")
+                else:
+                    annotate(
+                        "error",
+                        f"pattern check failed (category: {cat}) — "
+                        "the matching pattern list lives on the host "
+                        "and is never shown here")
+        else:
+            failures += 1
+            annotate(
+                "error",
+                "pattern service unavailable — push blocked; push "
+                "from a Mac terminal or fix the service")
+
+    pats = [] if service_handled else load_patterns(args.patterns)
     if pats:
         print(f"ci_checks: pattern list loaded ({len(pats)} patterns)")
         diff = git(repo, "diff", args.range)
@@ -107,7 +195,7 @@ def main(argv=None):
                     "instance data before this can merge — public history "
                     "cannot be unpublished.")
                 break
-    else:
+    elif not service_handled:
         print("ci_checks: no pattern list available (GATE_PATTERNS_FILE "
               "unset) — personal-pattern tier skipped")
 

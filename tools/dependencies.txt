@@ -1,0 +1,34 @@
+# dependencies.txt — RepoKit's external-tool dependency manifest.
+#
+# The single source of truth for the external programs RepoKit's
+# LOCAL checks call (the scripts in tools/checks/). RepoKit itself
+# ships only wiring — these programs are installed by the
+# development environment (e.g. the devbox image bakes them in at
+# build time, pinned from THIS file's values). When a check gains a
+# new external dependency, the change lands here in the same commit
+# as the check that needs it; environments compare this manifest
+# against what they actually installed and surface drift loudly
+# instead of letting a check silently skip (devbox: warned at
+# session start, fix offered at exit / via `dev-agent
+# --sync-tooling`). Nothing ever installs from this file at check
+# time — no check in this toolkit downloads anything at run time.
+#
+# Format — one tool per line, pipe-separated, five fields:
+#   name | kind | version | sha256 | notes
+#   name     the tool's name as environments record it
+#   kind     binary (a release archive installed as-is) | pip (a
+#            Python package installed into the environment)
+#   version  the exact pinned version
+#   sha256   for kind=binary: BOTH release-archive checksums as
+#            amd64=<sha256>;arm64=<sha256> (dpkg architecture names,
+#            matching the ARG suffixes environments pin); taken from
+#            the project's official release checksums file and
+#            verified against the downloaded archives when pinned.
+#            For kind=pip: empty (the package index serves the
+#            pinned version; environments may add hash pinning).
+#   notes    free text: asset-name quirks, provenance, caveats.
+# Lines starting with # are comments; blank lines are ignored.
+#
+gitleaks | binary | 8.30.1 | amd64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb;arm64=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | Secret scan (tools/checks/20-gitleaks.sh). Linux assets are named linux_x64 / linux_arm64. Checksums from the official v8.30.1 release checksums file, verified against the downloaded archives 2026-11-12. NOTE: CVE-2026-124039 names 8.30.2 as its fix version, but 8.30.2 was NOT published upstream as of 2026-11-12 (no tag, no release assets, no container image) — 8.30.1 is the newest published release. Bump version + both hashes here when 8.30.2 ships; environments pick the change up through their drift checker.
+shellcheck | binary | 0.11.0 | amd64=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198;arm64=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 | Shell lint (tools/checks/40-shellcheck.sh). Linux assets are named linux.x86_64 / linux.aarch64 (.tar.xz). Checksums computed from the official v0.11.0 release archives and cross-checked against an independent pinned copy, 2026-11-12.
+pre-commit-hooks | pip | 6.0.0 |  | File hygiene (tools/checks/30-file-hygiene.sh) — the pre-commit project's official hooks package; its console scripts (check-merge-conflict, check-yaml, end-of-file-fixer, trailing-whitespace-fixer, …) must be on PATH. Verified 2026-11-12: 6.0.0 is the current stable on PyPI and installs cleanly with all console scripts.
