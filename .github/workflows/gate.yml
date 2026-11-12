@@ -49,6 +49,23 @@ jobs:
           gitleaks version
       - name: Secret scan (full history, redacted)
         run: gitleaks git --redact --verbose .
+      - name: Workflow lint (zizmor + actionlint, pinned)
+        # Only for repos that have workflows. Zizmor = security audit
+        # (template injection, unpinned actions, excess permissions);
+        # actionlint = syntax/expression correctness. Versions pinned;
+        # bump deliberately. (Release-asset names to be re-verified on
+        # first live run.)
+        run: |
+          if [ -d .github/workflows ]; then
+            pip install --quiet "zizmor==1.11.0"
+            curl -sL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz -o /tmp/actionlint.tgz
+            tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+            sudo install /tmp/actionlint /usr/local/bin/actionlint
+            zizmor --no-online-audits .github/workflows
+            actionlint
+          else
+            echo "no .github/workflows — workflow lint skipped"
+          fi
       - name: Personal-pattern + format checks
         env:
           GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}
