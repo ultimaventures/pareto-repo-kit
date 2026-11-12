@@ -16,13 +16,25 @@
         the tooling checkout at push time, so new checks added to the
         toolkit apply as soon as the tooling checkout is updated.
 
+    repo-kit setup [--tooling PATH] [--force] [answer flags]
+        Guided questionnaire that builds your private patterns.txt in
+        the tooling checkout root (see "Your pattern list" in the
+        tooling README). Interactive prompts with detected defaults
+        (your OS username, home paths); every prompt has a matching
+        flag (--email, --domain, --handle, --name, --age-key,
+        --no-paths, --no-gmail, --no-tailnet) so the same setup is
+        scriptable and testable. Refuses to overwrite an existing
+        patterns.txt without --force.
+
 --tooling names a local tooling checkout in v0.1; fetching templates
 from a git URL (sparse checkout of templates/ + install/ + hooks/) is
 the planned distribution once the tooling repo is published.
 """
 
 import argparse
+import getpass
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -103,6 +115,115 @@ def install_hooks(tooling, repo):
     say("installed .git/hooks/pre-push (dispatcher)")
 
 
+def _ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return ""
+
+
+def _ask_list(prompt):
+    raw = _ask(prompt)
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
+def cmd_setup(tooling, args):
+    out = os.path.join(tooling, "patterns.txt")
+    if os.path.exists(out) and not args.force:
+        say("patterns.txt already exists in the tooling checkout — "
+            "refusing to overwrite it. Edit it directly, or re-run "
+            "with --force to replace it.")
+        return 1
+    user = getpass.getuser()
+    interactive = not any([args.email, args.domain, args.handle,
+                           args.name, args.age_key])
+    emails, domains, handles, names = (
+        list(args.email), list(args.domain), list(args.handle),
+        list(args.name))
+    age_key = args.age_key
+    want_gmail, want_tailnet, want_paths = (
+        not args.no_gmail, not args.no_tailnet, not args.no_paths)
+    if interactive:
+        print("repo-kit setup — your private pattern list.")
+        print("Answer what applies; press Enter to skip a question. "
+              "Values become patterns in patterns.txt (tooling root, "
+              "git-ignored). Nothing is uploaded anywhere.\n")
+        emails = _ask_list("Your email addresses (comma-separated): ")
+        domains = _ask_list(
+            "Domains you own, to block any address at them "
+            "(comma-separated): ")
+        want_gmail = _ask(
+            "Also block ANY @gmail.com address in your repos? [Y/n] "
+            ).lower() not in ("n", "no")
+        handles = _ask_list(
+            "Your usernames/handles on other services "
+            "(comma-separated): ")
+        names = _ask_list(
+            "Names unique to your setup — cloud project IDs, drive or "
+            "server names (comma-separated): ")
+        want_paths = _ask(
+            f"Block your home paths (/Users/{user}/ and "
+            f"/home/{user}/)? [Y/n] ").lower() not in ("n", "no")
+        want_tailnet = _ask(
+            "Block Tailscale tailnet names (*.ts.net)? [Y/n] "
+            ).lower() not in ("n", "no")
+        age_key = _ask(
+            "A sops age PUBLIC key (age1…), if you use one — it is an "
+            "identifier uniquely yours (Enter to skip): ") or None
+
+    lines = ["# patterns.txt — MY private pattern list.",
+             "# Built by `repo-kit setup`. Edit freely: one regex per "
+             "line,",
+             "# # starts a comment, matching is case-insensitive.",
+             "# NEVER commit this file anywhere (the tooling repo's",
+             "# .gitignore covers it here). For CI, paste its contents",
+             "# into the GATE_PATTERNS repository secret.", ""]
+    pats = []
+
+    def add(section, values):
+        if values:
+            lines.append(f"# {section}")
+            lines.extend(values)
+            lines.append("")
+            pats.extend(values)
+
+    add("Email addresses (mine)",
+        [re.escape(e) for e in emails])
+    add("My domains — any address at them",
+        [r"[\w.+-]+@" + re.escape(d) for d in domains])
+    if want_gmail:
+        add("Webmail catch-all", [r"[\w.+-]+@gmail\.com"])
+    add("Handles / usernames", [re.escape(h) for h in handles])
+    add("My infrastructure names (cloud projects, drives, servers)",
+        [re.escape(n) for n in names])
+    if want_paths:
+        add("My machine paths",
+            [f"/Users/{user}/", f"/home/{user}/"])
+    if want_tailnet:
+        add("Tailnet names", [r"[a-z0-9-]+\.ts\.net"])
+    if age_key:
+        add("My age public key (identifier)", ["age1[a-z0-9]{58}"]
+            if not age_key.startswith("age1") else [re.escape(age_key)])
+
+    bad = []
+    for p in pats:
+        try:
+            re.compile(p, re.IGNORECASE)
+        except re.error as exc:
+            bad.append(f"{p}: {exc}")
+    if bad:
+        say("these generated patterns do not compile — nothing written:")
+        for b in bad:
+            print(f"  {b}")
+        return 1
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    say(f"wrote {out} — {len(pats)} patterns")
+    say("next: in each project repo, add the GATE_PATTERNS secret with "
+        "this file's contents so CI enforces the same list")
+    return 0
+
+
 def cmd_init(tooling, repo):
     for rel in CONTENT_FILES + ADR_FILES:
         copy_if_absent(os.path.join(tooling, "templates", rel),
@@ -127,12 +248,26 @@ def main(argv=None):
         sp = sub.add_parser(name)
         sp.add_argument("repo", nargs="?", default=".")
         sp.add_argument("--tooling", default=default_tooling)
+    sp = sub.add_parser("setup")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--force", action="store_true",
+                    help="replace an existing patterns.txt")
+    sp.add_argument("--email", action="append", default=[])
+    sp.add_argument("--domain", action="append", default=[])
+    sp.add_argument("--handle", action="append", default=[])
+    sp.add_argument("--name", action="append", default=[])
+    sp.add_argument("--age-key", default=None)
+    sp.add_argument("--no-gmail", action="store_true")
+    sp.add_argument("--no-tailnet", action="store_true")
+    sp.add_argument("--no-paths", action="store_true")
     args = ap.parse_args(argv)
     tooling = os.path.abspath(args.tooling)
-    repo = os.path.abspath(args.repo)
     if not os.path.isdir(os.path.join(tooling, "templates")):
         say(f"tooling checkout not found at {tooling}")
         return 2
+    if args.command == "setup":
+        return cmd_setup(tooling, args)
+    repo = os.path.abspath(args.repo)
     if args.command == "init":
         cmd_init(tooling, repo)
     else:
