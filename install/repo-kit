@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""repo-kit — the repo-tooling installer. ONE entry point, two jobs:
+
+    repo-kit init  [--tooling PATH] [REPO]
+        Scaffold a repo from the tooling templates: PLAN.md,
+        project.public.yaml, CONTRIBUTING.md, adr/ format files and the
+        thin caller workflows — copying ONLY what belongs in a project
+        repo — then merge the tooling block into .gitignore and install
+        the hooks. Existing project CONTENT files are never overwritten;
+        managed files (workflows) are only written when absent, so
+        re-running init is safe and reports what it skipped.
+
+    repo-kit hooks [--tooling PATH] [REPO]
+        Install/refresh .git/hooks/pre-push (the dispatcher). This is
+        also the "update" path for local checks: the dispatcher reads
+        the tooling checkout at push time, so new checks added to the
+        toolkit apply as soon as the tooling checkout is updated.
+
+--tooling names a local tooling checkout in v0.1; fetching templates
+from a git URL (sparse checkout of templates/ + install/ + hooks/) is
+the planned distribution once the tooling repo is published.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+CONTENT_FILES = ["PLAN.md", "project.public.yaml", "CONTRIBUTING.md"]
+ADR_FILES = ["adr/ADR-FORMAT.md", "adr/ADR-000-template.json"]
+WORKFLOW_FILES = ["dashboard.yml", "gate.yml"]
+BLOCK_BEGIN = "# >>> repo-tooling"
+BLOCK_END = "# <<< repo-tooling"
+
+
+def say(msg):
+    print(f"repo-kit: {msg}")
+
+
+def copy_if_absent(src, dst, label):
+    if os.path.exists(dst):
+        say(f"skip {label} (exists — project content is never overwritten)")
+        return False
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+    say(f"wrote {label}")
+    return True
+
+
+def merge_gitignore(tooling, repo):
+    block = open(os.path.join(tooling, "templates", "gitignore.block"),
+                 encoding="utf-8").read().strip("\n")
+    path = os.path.join(repo, ".gitignore")
+    existing = ""
+    if os.path.exists(path):
+        existing = open(path, encoding="utf-8").read()
+    if BLOCK_BEGIN in existing and BLOCK_END in existing:
+        head, _, rest = existing.partition(BLOCK_BEGIN)
+        _, _, tail = rest.partition(BLOCK_END)
+        merged = head.rstrip("\n") + "\n\n" + block + \
+            (("\n" + tail) if tail.strip("\n") else "\n")
+        action = "refreshed tooling block in"
+    elif existing.strip():
+        merged = existing.rstrip("\n") + "\n\n" + block + "\n"
+        action = "appended tooling block to"
+    else:
+        merged = block + "\n"
+        action = "created"
+    if merged != existing:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(merged)
+        say(f"{action} .gitignore")
+    else:
+        say(".gitignore tooling block unchanged")
+
+
+def install_hooks(tooling, repo):
+    git_dir = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--git-dir"],
+        capture_output=True, text=True)
+    if git_dir.returncode != 0:
+        say("not a git repo — run `git init` first; hooks skipped")
+        return
+    hooks_dir = os.path.join(repo, git_dir.stdout.strip(), "hooks")
+    os.makedirs(hooks_dir, exist_ok=True)
+    dst = os.path.join(hooks_dir, "pre-push")
+    src_text = open(os.path.join(tooling, "hooks", "pre-push"),
+                    encoding="utf-8").read()
+    baked = src_text.replace("__TOOLING_HOME__", os.path.abspath(tooling))
+    if os.path.exists(dst):
+        current = open(dst, encoding="utf-8").read()
+        if "repo-tooling pre-push dispatcher" not in current:
+            say("REFUSED: .git/hooks/pre-push exists and is not the "
+                "repo-tooling dispatcher — merge it by hand, not replaced")
+            return
+        if current == baked:
+            say("pre-push hook unchanged")
+            return
+    with open(dst, "w", encoding="utf-8") as fh:
+        fh.write(baked)
+    os.chmod(dst, 0o755)
+    say("installed .git/hooks/pre-push (dispatcher)")
+
+
+def cmd_init(tooling, repo):
+    for rel in CONTENT_FILES + ADR_FILES:
+        copy_if_absent(os.path.join(tooling, "templates", rel),
+                       os.path.join(repo, rel), rel)
+    for name in WORKFLOW_FILES:
+        copy_if_absent(
+            os.path.join(tooling, "templates", "workflows", name),
+            os.path.join(repo, ".github", "workflows", name),
+            f".github/workflows/{name}")
+    merge_gitignore(tooling, repo)
+    install_hooks(tooling, repo)
+    say("done. Next: edit project.public.yaml + PLAN.md, add the "
+        "GATE_PATTERNS repo secret, enable Pages (source: GitHub Actions).")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("command", choices=["init", "hooks"])
+    ap.add_argument("repo", nargs="?", default=".")
+    ap.add_argument("--tooling",
+                    default=os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))))
+    args = ap.parse_args(argv)
+    tooling = os.path.abspath(args.tooling)
+    repo = os.path.abspath(args.repo)
+    if not os.path.isdir(os.path.join(tooling, "templates")):
+        say(f"tooling checkout not found at {tooling}")
+        return 2
+    if args.command == "init":
+        cmd_init(tooling, repo)
+    else:
+        install_hooks(tooling, repo)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+# Public project descriptor — the ONLY project-state file in this repo.
+# It carries publishable facts about the project. The maintainer's private
+# project state lives outside this repository and is never used to build
+# anything here. The dashboard renderer reads this file, the commit log,
+# adr/, and PLAN.md — nothing else.
+project_id: my-project
+name: My Project (working title)
+status: pre-alpha
+summary: >-
+  One short paragraph: what this is, who it is for, and its current shape.
+  Written for a stranger landing on the dashboard.
+tagline: One line that fits under the project name on the dashboard.

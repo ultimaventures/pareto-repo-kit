@@ -1,0 +1,19 @@
+name: Gate
+
+# Thin caller — all logic lives in the tooling repo's reusable workflow.
+# Add your project's own jobs (test suites etc.) to THIS file alongside
+# the gate job; they are project-specific by design.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: ultimaventures/repo-tooling/.github/workflows/gate.yml@v0.1.0
+    secrets:
+      GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}

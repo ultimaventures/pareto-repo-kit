@@ -1,0 +1,35 @@
+#!/bin/sh
+# repo-tooling pre-push dispatcher — installed by repo-kit.
+# Runs every executable in the tooling repo's tools/checks/ (sorted), each
+# receiving the outgoing commit range as $1 with the repo root as cwd.
+# Adding a check to the toolkit = dropping a script into tools/checks/;
+# repos pick it up on their next `repo-kit hooks` refresh (or immediately,
+# since the hook reads the tooling checkout, not a copy).
+# TOOLING_HOME is baked in at install time; REPO_TOOLING_HOME overrides.
+set -u
+TOOLING_HOME="${REPO_TOOLING_HOME:-__TOOLING_HOME__}"
+if [ ! -d "$TOOLING_HOME/tools/checks" ]; then
+  echo "repo-tooling: tooling checkout not found at $TOOLING_HOME —" >&2
+  echo "set REPO_TOOLING_HOME or re-run repo-kit hooks. Push not checked." >&2
+  exit 1
+fi
+cd "$(git rev-parse --show-toplevel)" || exit 1
+if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+  RANGE="origin/main..HEAD"
+else
+  RANGE="HEAD~1..HEAD"
+fi
+fail=0
+for check in "$TOOLING_HOME"/tools/checks/*.sh; do
+  [ -x "$check" ] || continue
+  echo "— check: $(basename "$check")"
+  if ! "$check" "$RANGE"; then
+    fail=1
+  fi
+done
+if [ "$fail" -ne 0 ]; then
+  echo "repo-tooling: a hard check failed — push stopped. Fix and re-push" >&2
+  echo "(warnings never stop a push; only hard failures do)." >&2
+  exit 1
+fi
+echo "repo-tooling: checks done."

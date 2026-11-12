@@ -1,0 +1,27 @@
+name: Dashboard
+
+# Thin caller — all logic lives in the tooling repo's reusable workflow.
+# Bump the pinned tooling version deliberately, like any dependency pin.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "adr/**"
+      - "PLAN.md"
+      - "project.public.yaml"
+      - ".github/workflows/dashboard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  dashboard:
+    uses: ultimaventures/repo-tooling/.github/workflows/dashboard.yml@v0.1.0
