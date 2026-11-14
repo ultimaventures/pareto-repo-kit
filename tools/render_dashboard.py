@@ -118,12 +118,19 @@ def parse_adrs(repo):
         return adrs
     for name in sorted(os.listdir(adr_dir)):
         if name.endswith(".json"):
+            # The seeded ADR-000 template is a form to copy, not a decision
+            # record — never render it as one.
+            if "template" in name.lower():
+                continue
             try:
                 with open(os.path.join(adr_dir, name),
                           encoding="utf-8") as fh:
-                    adrs.append(json.load(fh))
+                    record = json.load(fh)
             except (ValueError, OSError):
                 continue
+            if record.get("id") == "ADR-000":
+                continue
+            adrs.append(record)
     return adrs
 
 
