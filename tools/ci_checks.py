@@ -30,6 +30,16 @@ plus category NAMES only (never pattern text, never matched text).
 An unreachable service, a timeout, or an unparseable reply FAILS
 CLOSED: a push that cannot be pattern-checked is a blocked push.
 With the variables absent, local behaviour is exactly as above.
+
+SECURITY PROFILE (devbox review instance): when
+REPOKIT_CHECK_PROFILE=security, only the pattern tier runs — the
+subject-format and plan-citation warning blocks are skipped
+entirely. The warnings never block anything, but a review session
+pushing feedback has no use for development-habit reminders, and
+its pushes should carry exactly the security checks and no noise.
+Any other profile value (or none) keeps full behaviour; the
+pre-push dispatcher is the layer that fails closed on an unknown
+profile value.
 """
 
 import argparse
@@ -70,13 +80,23 @@ def load_patterns(path):
     return pats
 
 
+def _human_size(n):
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KiB"
+    return f"{n / (1024 * 1024):.1f} MiB"
+
+
 def pattern_service_scan(repo, range_, commits):
     """Service-mode pattern check (see the module docstring).
 
-    Returns ("ok", []) | ("fail", [category, ...]) |
-    ("unavailable", []). The payload is the same content the local
-    tier scans: every commit subject/body in the range, then the
-    range's unified diff.
+    Returns (status, categories, size): status is "ok" | "fail" |
+    "unavailable"; categories is a list of category names; size is
+    the byte size the service measured for an oversize ("too-
+    large") refusal, else None. The payload is the same content
+    the local tier scans: every commit subject/body in the range,
+    then the range's unified diff.
     """
     url = os.environ["REPOKIT_PATTERNS_URL"].rstrip("/") + "/scan"
     token = os.environ["REPOKIT_PATTERNS_TOKEN"]
@@ -92,23 +112,26 @@ def pattern_service_scan(repo, range_, commits):
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         # A JSON error body still carries category names (e.g. a 413
-        # "too-large"); anything else is an unavailable service.
+        # "too-large", which also carries the measured "size");
+        # anything else is an unavailable service.
         try:
             data = json.loads(e.read().decode("utf-8"))
         except Exception:
-            return ("unavailable", [])
+            return ("unavailable", [], None)
         cats = data.get("categories") if isinstance(data, dict) else None
+        size = data.get("size") if isinstance(data, dict) else None
         if cats and cats != ["forbidden"]:
-            return ("fail", [str(c) for c in cats])
-        return ("unavailable", [])
+            return ("fail", [str(c) for c in cats],
+                    size if isinstance(size, int) else None)
+        return ("unavailable", [], None)
     except Exception:
-        return ("unavailable", [])
+        return ("unavailable", [], None)
     if isinstance(data, dict) and data.get("ok"):
-        return ("ok", [])
+        return ("ok", [], None)
     cats = data.get("categories") if isinstance(data, dict) else None
     if cats:
-        return ("fail", [str(c) for c in cats])
-    return ("unavailable", [])
+        return ("fail", [str(c) for c in cats], None)
+    return ("unavailable", [], None)
 
 
 def main(argv=None):
@@ -141,8 +164,8 @@ def main(argv=None):
     if os.environ.get("REPOKIT_PATTERNS_URL") and \
             os.environ.get("REPOKIT_PATTERNS_TOKEN"):
         service_handled = True
-        status, categories = pattern_service_scan(repo, args.range,
-                                                  commits)
+        status, categories, size = pattern_service_scan(
+            repo, args.range, commits)
         if status == "ok":
             print("ci_checks: pattern service: OK (the pattern list "
                   "stayed on the host)")
@@ -155,6 +178,24 @@ def main(argv=None):
                         "pattern service has no patterns configured "
                         "— push blocked; add patterns.txt on the host "
                         "or push from a Mac terminal")
+                elif cat == "scan-limit":
+                    annotate(
+                        "error",
+                        "pattern service scan limit reached for "
+                        "this session — push blocked; end the "
+                        "session (the service resets with it) or "
+                        "push from a Mac terminal")
+                elif cat == "too-large":
+                    measured = (f"{_human_size(size)}, limit 1 MiB"
+                                if isinstance(size, int)
+                                else "over the 1 MiB limit")
+                    annotate(
+                        "error",
+                        f"Pattern scan too large ({measured}). If "
+                        "this push is legitimate, on the Mac run: "
+                        "dev-agent --allow-big-push — then retry "
+                        "the push within 10 minutes. The allowance "
+                        "covers ONE oversize scan, up to 32 MiB.")
                 else:
                     annotate(
                         "error",
@@ -199,28 +240,36 @@ def main(argv=None):
         print("ci_checks: no pattern list available (GATE_PATTERNS_FILE "
               "unset) — personal-pattern tier skipped")
 
-    cited = any(STEP_CITE_RX.search(s + b) for _, s, b in commits)
-    plan_changed = "PLAN.md" in git(repo, "diff", "--name-only", args.range)
-    for sha, subject, _ in commits:
-        if not SUBJECT_RX.match(subject):
+    # Warnings tier — skipped ENTIRELY under the security profile
+    # (see the module docstring): the pattern tier above is the
+    # whole job there.
+    if os.environ.get("REPOKIT_CHECK_PROFILE") != "security":
+        cited = any(STEP_CITE_RX.search(s + b) for _, s, b in commits)
+        plan_changed = "PLAN.md" in git(repo, "diff",
+                                       "--name-only", args.range)
+        for sha, subject, _ in commits:
+            if not SUBJECT_RX.match(subject):
+                annotate(
+                    "warning",
+                    f"Commit format: '{subject}' ({sha}) doesn't start "
+                    "with a type prefix. Subjects become the public "
+                    "activity feed — use e.g. 'feat: …', 'fix: …', "
+                    "'docs: …', 'adr: …'. (Reminder only — this never "
+                    "blocks a merge.)")
+        if not cited and not plan_changed:
+            plan = parse_plan(os.path.join(repo, "PLAN.md"))
+            open_steps = [s for s in plan.get("Next steps", [])
+                          if not s["done"]]
+            listing = "; ".join(f"{s['id']} {s['text'][:60]}…"
+                                for s in open_steps[:5])
             annotate(
                 "warning",
-                f"Commit format: '{subject}' ({sha}) doesn't start with "
-                "a type prefix. Subjects become the public activity feed — "
-                "use e.g. 'feat: …', 'fix: …', 'docs: …', 'adr: …'. "
-                "(Reminder only — this never blocks a merge.)")
-    if not cited and not plan_changed:
-        plan = parse_plan(os.path.join(repo, "PLAN.md"))
-        open_steps = [s for s in plan.get("Next steps", []) if not s["done"]]
-        listing = "; ".join(f"{s['id']} {s['text'][:60]}…"
-                            for s in open_steps[:5])
-        annotate(
-            "warning",
-            "Plan check: no commit in this range cites a plan step and "
-            "PLAN.md wasn't updated. If this work completes a step, add "
-            "its ID to a commit subject — e.g. 'feat: mount smoke test "
-            f"(ns-4)' — or tick it in PLAN.md. Open steps: {listing}. "
-            "(Reminder only — this never blocks a merge.)")
+                "Plan check: no commit in this range cites a plan "
+                "step and PLAN.md wasn't updated. If this work "
+                "completes a step, add its ID to a commit subject — "
+                "e.g. 'feat: mount smoke test (ns-4)' — or tick it "
+                f"in PLAN.md. Open steps: {listing}. (Reminder "
+                "only — this never blocks a merge.)")
 
     if failures:
         print(f"ci_checks: {failures} hard failure(s)")

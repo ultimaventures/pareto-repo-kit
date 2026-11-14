@@ -6,6 +6,14 @@
 # repos pick it up on their next `repo-kit hooks` refresh (or immediately,
 # since the hook reads the tooling checkout, not a copy).
 # TOOLING_HOME is baked in at install time; REPO_TOOLING_HOME overrides.
+#
+# CHECK PROFILES (devbox, 2026-11-12): REPOKIT_CHECK_PROFILE selects
+# which checks run. Unset or "full" = every executable check, as
+# always. "security" = only the checks that stop secrets and personal
+# patterns — 10-pattern-and-format.sh and 20-gitleaks.sh — for
+# sessions that push but do no development of their own (devbox's
+# review instance, ADR-016 there). Any OTHER value fails closed:
+# a typo must never silently run everything — or nothing.
 set -u
 TOOLING_HOME="${REPO_TOOLING_HOME:-__TOOLING_HOME__}"
 if [ ! -d "$TOOLING_HOME/tools/checks" ]; then
@@ -13,6 +21,16 @@ if [ ! -d "$TOOLING_HOME/tools/checks" ]; then
   echo "set REPO_TOOLING_HOME or re-run repo-kit hooks. Push not checked." >&2
   exit 1
 fi
+PROFILE="${REPOKIT_CHECK_PROFILE:-full}"
+case "$PROFILE" in
+  full|security) ;;
+  *)
+    echo "repo-tooling: unknown REPOKIT_CHECK_PROFILE '$PROFILE' —" >&2
+    echo "want 'full' or 'security' (or unset). Push NOT checked and NOT allowed:" >&2
+    echo "a misspelled profile must fail closed, never silently skip or run checks." >&2
+    exit 1
+    ;;
+esac
 cd "$(git rev-parse --show-toplevel)" || exit 1
 if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
   RANGE="origin/main..HEAD"
@@ -22,6 +40,12 @@ fi
 fail=0
 for check in "$TOOLING_HOME"/tools/checks/*.sh; do
   [ -x "$check" ] || continue
+  if [ "$PROFILE" = "security" ]; then
+    case "$(basename "$check")" in
+      10-pattern-and-format.sh|20-gitleaks.sh) ;;
+      *) continue ;;
+    esac
+  fi
   echo "— check: $(basename "$check")"
   if ! "$check" "$RANGE"; then
     fail=1
