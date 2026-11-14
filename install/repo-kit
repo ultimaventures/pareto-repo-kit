@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repo-kit — the repo-tooling installer. ONE entry point, two jobs:
+"""repo-kit — the repo-tooling installer. ONE entry point, five jobs:
 
     repo-kit init  [--tooling PATH] [REPO]
         Scaffold a repo from the tooling templates: PLAN.md,
@@ -26,6 +26,23 @@
         scriptable and testable. Refuses to overwrite an existing
         patterns.txt without --force.
 
+    repo-kit provision OWNER/REPO [--variant A|B] [--dry-run]
+        Apply the GitHub setup standard to a public repo through the
+        `gh` CLI / `gh api`: repository settings (squash-only merges,
+        auto-delete head branches, wiki/projects/discussions off unless
+        --keep-*), the free security stack (secret scanning + push
+        protection, Dependabot alerts + security updates, CodeQL
+        default setup, private vulnerability reporting), Actions
+        hardening (read-only default workflow token, approval for
+        first-time contributors' fork workflows), and the
+        `default-branch` ruleset from templates/rulesets/ (variant A:
+        solo repo, required approvals 0; variant B: an agent or outside
+        developer holds a write token — 1 approval + Code Owner review,
+        with --bypass-user-id putting the owner on the bypass list in
+        pull-request mode). Idempotent: an existing ruleset of the same
+        name is updated in place, never duplicated. --dry-run prints
+        every command and payload and executes nothing.
+
 --tooling names a local tooling checkout in v0.1; fetching templates
 from a git URL (sparse checkout of templates/ + install/ + hooks/) is
 the planned distribution once the tooling repo is published.
@@ -33,8 +50,10 @@ the planned distribution once the tooling repo is published.
 
 import argparse
 import getpass
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -300,6 +319,177 @@ def cmd_env(tooling, args):
     return 0
 
 
+RULESET_NAME = "default-branch"
+
+
+def _gh_api(method, path, payload=None):
+    """One `gh api` call. Returns (returncode, stdout, stderr)."""
+    cmd = ["gh", "api", "--method", method, path]
+    data = None
+    if payload is not None:
+        cmd += ["--input", "-"]
+        data = json.dumps(payload)
+    proc = subprocess.run(cmd, input=data, capture_output=True,
+                          text=True)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _provision_steps(args, owner, repo):
+    """The settings/security API calls of the standard, in order.
+
+    Each step is (label, method, path, payload-or-None). The ruleset
+    is handled separately in cmd_provision: whether it is a create or
+    an update depends on what already exists on the repo.
+    """
+    base = f"repos/{owner}/{repo}"
+    settings = {
+        # Squash-only merges: one clean conventional-commit subject per
+        # change on main (the dashboard renderer derives the activity
+        # feed from those subjects). Merged PR branches delete
+        # themselves. Unused surfaces off unless --keep-*.
+        "allow_squash_merge": True,
+        "allow_merge_commit": False,
+        "allow_rebase_merge": False,
+        "delete_branch_on_merge": True,
+        "has_wiki": bool(args.keep_wiki),
+        "has_projects": bool(args.keep_projects),
+        "has_discussions": bool(args.keep_discussions),
+        "security_and_analysis": {
+            "secret_scanning": {"status": "enabled"},
+            "secret_scanning_push_protection": {"status": "enabled"},
+            "dependabot_security_updates": {"status": "enabled"},
+        },
+    }
+    return [
+        ("repository settings (squash-only merges, auto-delete head "
+         "branches, unused surfaces off, secret scanning + push "
+         "protection, Dependabot security updates)",
+         "PATCH", base, settings),
+        ("Dependabot alerts", "PUT",
+         f"{base}/vulnerability-alerts", None),
+        ("private vulnerability reporting", "PUT",
+         f"{base}/private-vulnerability-reporting", None),
+        ("CodeQL code scanning (default setup)", "PATCH",
+         f"{base}/code-scanning/default-setup",
+         {"state": "configured", "query_suite": "default"}),
+        ("Actions: default workflow token read-only", "PUT",
+         f"{base}/actions/permissions/workflow",
+         {"default_workflow_permissions": "read",
+          "can_approve_pull_request_reviews": False}),
+        ("Actions: approval for first-time contributors' fork "
+         "workflows", "PUT",
+         f"{base}/actions/permissions/fork-pr-contribution-approval",
+         {"approval_policy": "first_time_contributors"}),
+    ]
+
+
+def _load_ruleset(tooling, args):
+    path = os.path.join(tooling, "templates", "rulesets",
+                        f"variant-{args.variant.lower()}.json")
+    with open(path, encoding="utf-8") as fh:
+        ruleset = json.load(fh)
+    if args.required_check:
+        checks = [{"context": c} for c in args.required_check]
+        for rule in ruleset["rules"]:
+            if rule["type"] == "required_status_checks":
+                rule["parameters"]["required_status_checks"] = checks
+    if args.bypass_user_id:
+        # Variant B per the standard: the owner bypasses in
+        # pull-request mode only, so he can merge his own work while
+        # the approval rule binds everyone else.
+        ruleset["bypass_actors"] = [{
+            "actor_id": args.bypass_user_id,
+            "actor_type": "User",
+            "bypass_mode": "pull_request",
+        }]
+    return ruleset
+
+
+def cmd_provision(tooling, args):
+    m = re.fullmatch(r"([\w.-]+)/([\w.-]+)", args.target or "")
+    if not m:
+        say("target must be OWNER/REPO, e.g. "
+            "repo-kit provision octocat/hello-world --dry-run")
+        return 2
+    owner, repo = m.groups()
+    base = f"repos/{owner}/{repo}"
+    steps = _provision_steps(args, owner, repo)
+    ruleset = _load_ruleset(tooling, args)
+
+    def show(method, path, payload):
+        cmd = ["gh", "api", "--method", method, path]
+        if payload is not None:
+            cmd += ["--input", "-"]
+        print(f"  $ {shlex.join(cmd)}")
+        if payload is not None:
+            body = json.dumps(payload, indent=2)
+            print("\n".join(f"    {ln}" for ln in body.splitlines()))
+
+    if args.dry_run:
+        print(f"repo-kit provision — DRY RUN for {owner}/{repo} "
+              f"(ruleset variant {args.variant}). Nothing will be "
+              "executed; no network calls are made.")
+        for label, method, path, payload in steps:
+            print(f"\n# {label}")
+            show(method, path, payload)
+        print(f"\n# ruleset '{RULESET_NAME}' on the default branch — "
+              "idempotent: looked up by name first, then created or "
+              "updated in place (never duplicated)")
+        show("GET", f"{base}/rulesets", None)
+        print(f"  … if no ruleset named '{RULESET_NAME}' exists:")
+        print(f"      POST   {base}/rulesets")
+        print(f"  … if one exists (id <id>):")
+        print(f"      PUT    {base}/rulesets/<id>")
+        print("  … with this payload:")
+        body = json.dumps(ruleset, indent=2)
+        print("\n".join(f"    {ln}" for ln in body.splitlines()))
+        if args.variant == "B" and not args.bypass_user_id:
+            print("\n  NOTE (variant B): the standard also puts YOU "
+                  "on the ruleset bypass list in pull-request mode, "
+                  "so you can merge your own PRs while the approval "
+                  "rule binds token holders. Pass --bypass-user-id "
+                  "<your numeric GitHub user id> to include that.")
+        print("\nDry run only — no commands were executed.")
+        return 0
+
+    if not shutil.which("gh"):
+        say("the GitHub CLI (`gh`) is required for provisioning — "
+            "install it and run `gh auth login` first")
+        return 2
+    for label, method, path, payload in steps:
+        rc, out, err = _gh_api(method, path, payload)
+        if rc != 0:
+            say(f"FAILED at '{label}': {(err or out).strip()}")
+            return 1
+        say(f"ok — {label}")
+    rc, out, err = _gh_api("GET", f"{base}/rulesets?per_page=100")
+    if rc != 0:
+        say(f"FAILED listing existing rulesets: {(err or out).strip()}")
+        return 1
+    try:
+        existing = [r for r in json.loads(out or "[]")
+                    if r.get("name") == RULESET_NAME]
+    except ValueError:
+        say("could not parse the ruleset list GitHub returned — "
+            "stopping rather than risk a duplicate ruleset")
+        return 1
+    if existing:
+        rid = existing[0]["id"]
+        rc, out, err = _gh_api("PUT", f"{base}/rulesets/{rid}", ruleset)
+        action = f"updated in place (id {rid}) — no duplicate created"
+    else:
+        rc, out, err = _gh_api("POST", f"{base}/rulesets", ruleset)
+        action = "created"
+    if rc != 0:
+        say(f"FAILED applying the ruleset: {(err or out).strip()}")
+        return 1
+    say(f"ok — ruleset '{RULESET_NAME}' (variant {args.variant}) "
+        f"{action}")
+    say(f"done — {owner}/{repo} matches the GitHub setup standard. "
+        "Re-run anytime to re-apply or audit; it is idempotent.")
+    return 0
+
+
 def cmd_init(tooling, repo):
     for rel in CONTENT_FILES + ADR_FILES:
         copy_if_absent(os.path.join(tooling, "templates", rel),
@@ -341,6 +531,33 @@ def main(argv=None):
     sp.add_argument("--no-gmail", action="store_true")
     sp.add_argument("--no-tailnet", action="store_true")
     sp.add_argument("--no-paths", action="store_true")
+    sp = sub.add_parser("provision")
+    sp.add_argument("target", help="OWNER/REPO of the GitHub repo to "
+                                   "bring up to the setup standard")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--variant", choices=["A", "B"], default="A",
+                    help="ruleset variant: A = solo repo, no agent or "
+                         "outside developer holds a write token "
+                         "(required approvals 0); B = a write token is "
+                         "held by an agent/outside developer (required "
+                         "approvals 1 + Code Owner review)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="print every gh command and API payload that "
+                         "WOULD run; execute nothing, no network")
+    sp.add_argument("--keep-wiki", action="store_true",
+                    help="leave the wiki enabled (standard: off)")
+    sp.add_argument("--keep-projects", action="store_true",
+                    help="leave Projects enabled (standard: off)")
+    sp.add_argument("--keep-discussions", action="store_true",
+                    help="leave Discussions enabled (standard: off)")
+    sp.add_argument("--required-check", action="append", default=[],
+                    help="status-check context the ruleset requires "
+                         "(repeatable; default: the template's — the "
+                         "gate workflow's 'gate / gate')")
+    sp.add_argument("--bypass-user-id", type=int, default=None,
+                    help="variant B: your numeric GitHub user id — "
+                         "added to the ruleset bypass list in "
+                         "pull-request mode, per the standard")
     args = ap.parse_args(argv)
     tooling = os.path.abspath(args.tooling)
     if not os.path.isdir(os.path.join(tooling, "templates")):
@@ -350,6 +567,8 @@ def main(argv=None):
         return cmd_setup(tooling, args)
     if args.command == "env":
         return cmd_env(tooling, args)
+    if args.command == "provision":
+        return cmd_provision(tooling, args)
     repo = os.path.abspath(args.repo)
     if args.command == "init":
         cmd_init(tooling, repo)

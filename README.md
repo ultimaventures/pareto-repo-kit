@@ -2,8 +2,23 @@
 
 A small development toolkit shared across projects: a public status
 dashboard generated from a repo's own history, a plan/decision-record
-format, and a two-tier pre-public gate. One repository, three ways of
+format, and a two-tier pre-public gate. One repository, several ways of
 being consumed — pick per piece, nothing forces the others.
+
+## What do you want to do?
+
+**You never copy folders out of this repo by hand.** Every capability
+is one `repo-kit` command (run from anywhere — it finds its own files
+inside this checkout) or, for CI, one workflow line:
+
+| Goal | Run |
+|---|---|
+| Scaffold a new project repo — plan/ADR seed files, thin caller workflows, the `.gitignore` tooling block, pre-push hooks | `repo-kit init [REPO]` |
+| Build (or rebuild) your private pattern list | `repo-kit setup` |
+| Install/refresh the pre-push checks in one repo | `repo-kit hooks [REPO]` |
+| Report this machine's tooling status (built for a dev container's entrypoint; `--hooks-root DIR` also installs hooks in every repo under DIR) | `repo-kit env [--hooks-root DIR]` |
+| Bring a public GitHub repo up to the setup standard — repo settings, security features, the `main` branch ruleset | `repo-kit provision OWNER/REPO [--variant A\|B] [--dry-run]` |
+| Use the dashboard + gate in CI, installing nothing locally | A thin caller workflow ending in `uses: <owner>/repo-tooling/.github/workflows/gate.yml@v0.1.0` |
 
 ## The pieces
 
@@ -31,6 +46,20 @@ being consumed — pick per piece, nothing forces the others.
   the tooling *checkout* at push time — so when the toolkit gains a
   linter or formatter check (a new script in `tools/checks/`), existing
   repos pick it up when their tooling checkout updates. No reinstall.
+- **GitHub-side settings are applied by `repo-kit provision`.** Repo
+  settings, security toggles and branch rulesets cannot live in a
+  file, so provision applies the setup standard to `OWNER/REPO`
+  through the `gh` CLI: squash-only merges, auto-delete head branches,
+  secret scanning + push protection, Dependabot, CodeQL default setup,
+  private vulnerability reporting, Actions hardening, and the
+  `default-branch` ruleset from `templates/rulesets/`. Two ruleset
+  variants: **A** (solo repo — required approvals 0) and **B** (an
+  agent or outside developer holds a write token — 1 approval + Code
+  Owner review; pass `--bypass-user-id` with your numeric GitHub user
+  id to sit on the bypass list in pull-request mode). It is
+  idempotent — an existing ruleset of the same name is updated in
+  place — so re-running it doubles as an audit. `--dry-run` prints
+  every command and payload and executes nothing.
 
 Machine-level binaries (gitleaks, future linters/formatters) are **not**
 distributed here — they are pinned and installed by the development
@@ -92,9 +121,12 @@ unchanged.
   (pattern/format, gitleaks, file hygiene, shellcheck) +
   `dependencies.txt`, the external-tool dependency manifest
 - `.github/workflows/` — the reusable workflows projects call
-- `templates/` — in-repo seeds + thin caller workflows + gitignore block
+- `templates/` — in-repo seeds + thin caller workflows + gitignore
+  block + `rulesets/` (the `default-branch` ruleset JSON provision
+  posts: variant A / variant B)
 - `hooks/` — the pre-push dispatcher
-- `install/repo-kit` — the installer (`init` / `hooks` / `setup` / `env`)
+- `install/repo-kit` — the installer (`init` / `hooks` / `setup` /
+  `env` / `provision`)
 
 File hygiene uses the maintained **pre-commit-hooks** package where it
 is installed (pinned in the dev environment / CI), falling back to a
