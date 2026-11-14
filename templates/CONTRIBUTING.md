@@ -37,7 +37,7 @@ never leave your machine.
 
 ## Local pre-push
 
-Installed by `repo-kit` (from the repo-tooling repo). The hook runs the
+Installed by `repo-kit` (from the Pareto Easy Repo Kit repo). The hook runs the
 same checks as CI — plus gitleaks, if installed — before anything leaves
 your machine. Point it at your private pattern list (never committed):
 

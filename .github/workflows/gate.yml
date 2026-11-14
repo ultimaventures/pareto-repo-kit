@@ -16,7 +16,7 @@ on:
     inputs:
       tooling_repo:
         type: string
-        default: "ultimaventures/repo-tooling"
+        default: "ultimaventures/pareto-repo-kit"
       tooling_ref:
         type: string
         default: "v0.1.0"

@@ -1,9 +1,12 @@
-# repo-tooling
+# Pareto Easy Repo Kit
 
-A small development toolkit shared across projects: a public status
-dashboard generated from a repo's own history, a plan/decision-record
-format, and a two-tier pre-public gate. One repository, several ways of
-being consumed — pick per piece, nothing forces the others.
+The Pareto idea applied to repository setup: the small set of steps that
+gets a new repo most of the benefit — a public status dashboard generated
+from the repo's own history, a plan/decision-record format, a two-tier
+pre-public gate, and one-command GitHub provisioning. One repository,
+several ways of being consumed — pick per piece, nothing forces the
+others. The toolkit's command is `repo-kit` (see `install/repo-kit`);
+the checkout folder may be named anything.
 
 ## What do you want to do?
 
@@ -18,7 +21,7 @@ inside this checkout) or, for CI, one workflow line:
 | Install/refresh the pre-push checks in one repo | `repo-kit hooks [REPO]` |
 | Report this machine's tooling status (built for a dev container's entrypoint; `--hooks-root DIR` also installs hooks in every repo under DIR) | `repo-kit env [--hooks-root DIR]` |
 | Bring a public GitHub repo up to the setup standard — repo settings, security features, the `main` branch ruleset | `repo-kit provision OWNER/REPO [--variant A\|B] [--dry-run]` |
-| Use the dashboard + gate in CI, installing nothing locally | A thin caller workflow ending in `uses: <owner>/repo-tooling/.github/workflows/gate.yml@v0.1.0` |
+| Use the dashboard + gate in CI, installing nothing locally | A thin caller workflow ending in `uses: <owner>/pareto-repo-kit/.github/workflows/gate.yml@v0.1.0` |
 
 ## The pieces
 
@@ -32,7 +35,7 @@ inside this checkout) or, for CI, one workflow line:
 ## Consuming, in practice
 
 - **CI is a library call.** A project's `.github/workflows/gate.yml` is
-  ~15 lines ending in `uses: <owner>/repo-tooling/.github/workflows/gate.yml@v0.1.0`.
+  ~15 lines ending in `uses: <owner>/pareto-repo-kit/.github/workflows/gate.yml@v0.1.0`.
   Pin a version like any dependency; bump deliberately.
 - **In-repo files are copied, not synced.** `repo-kit init` copies only
   `templates/` content (plus the thin caller workflows) into the target

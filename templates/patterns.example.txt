@@ -2,7 +2,7 @@
 #
 # HOW THIS WORKS
 #   1. Copy this file to `patterns.txt` IN YOUR LOCAL TOOLING CHECKOUT
-#      (the root of your repo-tooling clone — NOT inside a project repo).
+#      (the root of your Pareto Easy Repo Kit clone — NOT inside a project repo).
 #      The tooling repo's own .gitignore ignores `patterns.txt`, so it
 #      cannot be committed or pushed from there, and updating the tooling
 #      (git pull) never touches an untracked, ignored file — your list
