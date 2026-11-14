@@ -1,0 +1,26 @@
+name: Dashboard
+
+# Self-caller: see self-gate.yml for why this lives in a self-*.yml file.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "adr/**"
+      - "PLAN.md"
+      - "project.public.yaml"
+      - ".github/workflows/self-dashboard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  dashboard:
+    uses: ./.github/workflows/dashboard.yml

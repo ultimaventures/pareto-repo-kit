@@ -1,0 +1,21 @@
+name: Gate
+
+# Self-caller: in THIS repo the filenames gate.yml / dashboard.yml belong
+# to the reusable workflows themselves, so the dogfood callers live in
+# self-*.yml files and call the reusables by local path. The reusable
+# still checks out the published tooling (this repo, at the pinned tag)
+# for its check scripts — exactly what a consumer repo experiences.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
+    secrets:
+      GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}

@@ -7,3 +7,8 @@ patterns-*.local.txt
 
 # Renderer output if run against this repo itself
 _site/
+
+# >>> repo-tooling (managed block — repo-kit refreshes between the markers)
+_site/
+.repo-tooling/
+# <<< repo-tooling
