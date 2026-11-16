@@ -1,0 +1,812 @@
+From d7aa133d771f6b922c8fea51df15ddec654dfc6c Mon Sep 17 00:00:00 2001
+From: ultimaventures <ultimaventures@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 16:33:26 -0500
+Subject: [PATCH] =?UTF-8?q?feat:=20repo-kit=20packet=20(ns-4)=20=E2=80=94?=
+ =?UTF-8?q?=20review=20packets=20in=20a=20gitignored=20review/=20folder,?=
+ =?UTF-8?q?=2010-deep=20endpoint=20stack=20with=20--history/--rollback,=20?=
+ =?UTF-8?q?pattern=20scan;=20init=20seeds=20review/?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .gitignore                  |   3 +
+ PLAN.md                     |   6 +
+ README.md                   |  11 +
+ VERSION                     |   2 +-
+ install/repo-kit            |  72 ++++-
+ templates/review/.gitignore |   4 +
+ tools/review_packet.py      | 592 ++++++++++++++++++++++++++++++++++++
+ 7 files changed, 686 insertions(+), 4 deletions(-)
+ create mode 100644 templates/review/.gitignore
+ create mode 100644 tools/review_packet.py
+
+diff --git a/.gitignore b/.gitignore
+index 86e4a6a..5bff19b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,6 +8,9 @@ patterns-*.local.txt
+ # Renderer output if run against this repo itself
+ _site/
+ 
++# Python bytecode from local runs of the tools
++__pycache__/
++
+ # >>> repo-tooling (managed block — repo-kit refreshes between the markers)
+ _site/
+ .repo-tooling/
+diff --git a/PLAN.md b/PLAN.md
+index 7720674..ebada18 100644
+--- a/PLAN.md
++++ b/PLAN.md
+@@ -25,6 +25,12 @@ commit as the work itself**:
+   repo with `repo-kit provision` + the thin caller workflows and confirm
+   gate + dashboard go green end to end
+   blocked-by: ns-1
++- [x] ns-4 · Review packets in repo-kit: `repo-kit packet` (the packet
++  generator, folded in from the standalone script, reviewer-neutral),
++  packets + feedback in a gitignored in-repo `review/` folder seeded by
++  `init`, pattern scan on each generated packet, and the last-reviewed
++  memory as a stack of the last 10 endpoints with `--history` and
++  `--rollback N`
+ 
+ ## Open decisions
+ 
+diff --git a/README.md b/README.md
+index 729d6cb..9bd749a 100644
+--- a/README.md
++++ b/README.md
+@@ -21,6 +21,7 @@ inside this checkout) or, for CI, one workflow line:
+ | Install/refresh the pre-push checks in one repo | `repo-kit hooks [REPO]` |
+ | Report this machine's tooling status (built for a dev container's entrypoint; `--hooks-root DIR` also installs hooks in every repo under DIR) | `repo-kit env [--hooks-root DIR]` |
+ | Bring a public GitHub repo up to the setup standard — repo settings, security features, the `main` branch ruleset | `repo-kit provision OWNER/REPO [--variant A\|B] [--dry-run]` |
++| Build a review packet for everything committed since the last one — to hand to any reviewer | `repo-kit packet` (memory: `--history`, `--rollback N`, `--reset`; custom start: `--base REF`) |
+ | Use the dashboard + gate in CI, installing nothing locally | A thin caller workflow ending in `uses: <owner>/pareto-repo-kit/.github/workflows/gate.yml@v0.1.0` |
+ 
+ ## The pieces
+@@ -49,6 +50,16 @@ inside this checkout) or, for CI, one workflow line:
+   the tooling *checkout* at push time — so when the toolkit gains a
+   linter or formatter check (a new script in `tools/checks/`), existing
+   repos pick it up when their tooling checkout updates. No reinstall.
++- **Review packets live in a local-only `review/` folder.** `repo-kit
++  packet` builds one self-contained markdown packet per review round
++  (commit list, stats, diff, full changed-file texts) into
++  `review/packets/`; reviewer feedback is dropped in `review/feedback/`.
++  A nested `review/.gitignore` — seeded by `init`, created on demand by
++  `packet` — keeps the whole folder out of every commit and clone:
++  packets are working material, not project content. The packet memory
++  (the last 10 packet endpoints) lives in the repo's `.git`, so it is
++  per-clone and never committed either. Each generated packet is
++  pattern-scanned (your list, warnings only) before you share it.
+ - **GitHub-side settings are applied by `repo-kit provision`.** Repo
+   settings, security toggles and branch rulesets cannot live in a
+   file, so provision applies the setup standard to `OWNER/REPO`
+diff --git a/VERSION b/VERSION
+index 6e8bf73..0ea3a94 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.1.0
++0.2.0
+diff --git a/install/repo-kit b/install/repo-kit
+index a08379b..34f7e5b 100755
+--- a/install/repo-kit
++++ b/install/repo-kit
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""repo-kit — the repo-tooling installer. ONE entry point, five jobs:
++"""repo-kit — the repo-tooling installer. ONE entry point, six jobs:
+ 
+     repo-kit init  [--tooling PATH] [REPO]
+         Scaffold a repo from the tooling templates: PLAN.md,
+@@ -43,6 +43,20 @@
+         name is updated in place, never duplicated. --dry-run prints
+         every command and payload and executes nothing.
+ 
++    repo-kit packet [packet options]
++        Build a review packet (tools/review_packet.py): one
++        self-contained markdown file covering a commit range — commit
++        list, per-commit stats, diff, full changed-file texts — ready
++        to hand to any reviewer. Packets land in the repo's
++        review/packets/ folder (local-only, kept out of commits by
++        review/.gitignore; reviewer feedback goes in review/feedback/).
++        The tool remembers the last 10 packet endpoints in .git:
++        --history lists them, --rollback N rewinds the memory N packets
++        (for a packet generated but never sent), --reset clears it,
++        --base REF starts one packet at a custom ref. Every packet is
++        pattern-scanned after generation (warnings only). All packet
++        options pass through: `repo-kit packet --help` shows them.
++
+ --tooling names a local tooling checkout in v0.1; fetching templates
+ from a git URL (sparse checkout of templates/ + install/ + hooks/) is
+ the planned distribution once the tooling repo is published.
+@@ -537,17 +551,67 @@ def cmd_init(tooling, repo):
+             os.path.join(tooling, "templates", "workflows", name),
+             os.path.join(repo, ".github", "workflows", name),
+             f".github/workflows/{name}")
++    copy_if_absent(os.path.join(tooling, "templates", "review",
++                                ".gitignore"),
++                   os.path.join(repo, "review", ".gitignore"),
++                   "review/.gitignore")
++    for sub in ("packets", "feedback"):
++        os.makedirs(os.path.join(repo, "review", sub), exist_ok=True)
++    say("review/ seeded: packets + feedback folders (local-only — "
++        "everything under review/ except its .gitignore is ignored)")
+     merge_gitignore(tooling, repo)
+     install_hooks(tooling, repo)
+     say("done. Next: edit project.public.yaml + PLAN.md, add the "
+         "GATE_PATTERNS repo secret, enable Pages (source: GitHub Actions).")
+ 
+ 
++def cmd_packet_dispatch(rest):
++    """`repo-kit packet ...` — forwarded to tools/review_packet.py.
++
++    Handled outside argparse on purpose: the packet tool has its own
++    option set, and argparse would reject the tool's flags as
++    unrecognized instead of passing them through. An optional
++    --tooling PATH (or --tooling=PATH) anywhere in the arguments is
++    consumed here; everything else reaches the packet tool verbatim.
++    """
++    tooling = os.path.dirname(os.path.dirname(
++        os.path.realpath(__file__)))
++    forwarded = []
++    i = 0
++    while i < len(rest):
++        arg = rest[i]
++        if arg == "--tooling" and i + 1 < len(rest):
++            tooling = rest[i + 1]
++            i += 2
++        elif arg.startswith("--tooling="):
++            tooling = arg.split("=", 1)[1]
++            i += 1
++        else:
++            forwarded.append(arg)
++            i += 1
++    tooling = os.path.abspath(tooling)
++    script = os.path.join(tooling, "tools", "review_packet.py")
++    if not os.path.exists(script):
++        say(f"packet tool not found at {script}")
++        return 2
++    proc = subprocess.run([sys.executable, script, *forwarded])
++    return proc.returncode
++
++
+ def main(argv=None):
++    argv = list(sys.argv[1:] if argv is None else argv)
++    if argv and argv[0] == "packet":
++        return cmd_packet_dispatch(argv[1:])
+     default_tooling = os.path.dirname(os.path.dirname(
+         os.path.realpath(__file__)))
+-    ap = argparse.ArgumentParser(description=__doc__)
+-    sub = ap.add_subparsers(dest="command", required=True)
++    ap = argparse.ArgumentParser(
++        description=__doc__,
++        epilog="packet: build a review packet for a commit range — "
++               "run `repo-kit packet --help` for its options (it is "
++               "dispatched separately; its flags pass through).")
++    sub = ap.add_subparsers(dest="command", required=True,
++                            metavar="{init,hooks,env,setup,provision,"
++                                    "packet}")
+     for name in ("init", "hooks"):
+         sp = sub.add_parser(name)
+         sp.add_argument("repo", nargs="?", default=".")
+@@ -610,6 +674,8 @@ def main(argv=None):
+         return cmd_env(tooling, args)
+     if args.command == "provision":
+         return cmd_provision(tooling, args)
++    if args.command == "packet":  # unreachable: handled in main()
++        return 2
+     repo = os.path.abspath(args.repo)
+     if args.command == "init":
+         cmd_init(tooling, repo)
+diff --git a/templates/review/.gitignore b/templates/review/.gitignore
+new file mode 100644
+index 0000000..fc22015
+--- /dev/null
++++ b/templates/review/.gitignore
+@@ -0,0 +1,4 @@
++# Review packets and reviewer feedback are local-only working material:
++# generated from this repo's commits, reviewed elsewhere, never committed.
++*
++!.gitignore
+diff --git a/tools/review_packet.py b/tools/review_packet.py
+new file mode 100644
+index 0000000..31b487c
+--- /dev/null
++++ b/tools/review_packet.py
+@@ -0,0 +1,592 @@
++#!/usr/bin/env python3
++"""
++review_packet.py -- Build a review packet from a git commit range.
++
++A review packet is one self-contained markdown file holding everything a
++reviewer needs to review a range of commits without access to the repo:
++the commit list, per-commit stats, the unified diff, and the full text of
++each changed file, under a character budget. Packets are reviewer-neutral:
++the same packet can go to any reviewer, human or AI.
++
++    repo-kit packet                 # packet for everything since the last one
++    repo-kit packet --history       # show the remembered packet endpoints
++    repo-kit packet --rollback 1    # forget the last packet (e.g. never sent)
++
++How the range is chosen:
++  The tool remembers the commit each of the last 10 packets ended at (a
++  stack stored in .git/repo-kit-packet-state.json -- inside .git, so it is
++  never committed). A normal run starts where the last packet ended.
++  --base REF overrides the start for that one packet. --rollback N rewinds
++  the memory N packets so the next packet re-covers that range. --reset
++  clears the memory entirely; the next packet then covers only the most
++  recent commit (HEAD~1). If a legacy .git/claude-review-last-reviewed
++  file exists (from the predecessor script), it seeds the stack once.
++
++Where packets live:
++  By default, review/packets/ inside the repo, next to a review/feedback/
++  folder for incoming reviewer feedback. The whole review/ folder is
++  local-only: a nested review/.gitignore (created on demand, seeded by
++  `repo-kit init`) keeps it out of every commit and clone. After writing,
++  the packet is scanned against the pattern list (the same discovery as
++  the gate: $GATE_PATTERNS_FILE, else patterns.txt at the tooling root)
++  and any match is reported as a warning -- pattern numbers and packet
++  line numbers only, never the matched text.
++
++Stdlib only -- nothing to install. Works anywhere git + python3 exist.
++"""
++
++import argparse
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++from datetime import datetime, timezone
++
++EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
++STATE_NAME = "repo-kit-packet-state.json"
++LEGACY_STATE_NAME = "claude-review-last-reviewed"
++STACK_CAP = 10
++PER_FILE_CAP = 20_000  # only inline full text for files smaller than this
++
++REVIEW_GITIGNORE = """\
++# Review packets and reviewer feedback are local-only working material:
++# generated from this repo's commits, reviewed elsewhere, never committed.
++*
++!.gitignore
++"""
++
++REVIEW_PROMPT = """\
++You are reviewing a code change. Be blunt, specific, and concrete.
++
++Check for:
++1. Bugs -- logic errors, off-by-one mistakes, wrong assumptions, mishandled
++   null/None/empty values, race conditions, resource leaks.
++2. Security issues -- injection, exposed secrets, broken auth, unsafe
++   deserialization, path traversal.
++3. Edge cases -- empty input, huge input, error paths, concurrency.
++4. Anything likely to break in production.
++
++For each issue give: the file and line, what is wrong, and a concrete fix.
++If a file looks fine, say so in one line -- do not invent problems.
++End with a verdict: safe to merge / needs fixes / needs rework.
++"""
++
++LANG_BY_EXT = {
++    ".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript",
++    ".tsx": "tsx", ".mjs": "javascript", ".cjs": "javascript", ".go": "go",
++    ".rs": "rust", ".java": "java", ".kt": "kotlin", ".rb": "ruby",
++    ".php": "php", ".swift": "swift", ".sh": "bash", ".bash": "bash",
++    ".zsh": "bash", ".sql": "sql", ".json": "json", ".yaml": "yaml",
++    ".yml": "yaml", ".toml": "toml", ".xml": "xml", ".html": "html",
++    ".css": "css", ".scss": "scss", ".md": "markdown", ".c": "c",
++    ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp",
++}
++
++STATUS_LABELS = {"A": "added", "M": "modified", "D": "deleted",
++                 "R": "renamed", "T": "type-changed"}
++
++
++def sh(args, cwd):
++    return subprocess.run(args, cwd=cwd, capture_output=True,
++                          text=True, errors="replace")
++
++
++def git(args, cwd):
++    p = sh(["git", *args], cwd)
++    if p.returncode != 0:
++        raise RuntimeError("git %s failed:\n%s"
++                           % (" ".join(args), p.stderr.strip()))
++    return p.stdout
++
++
++def short(sha):
++    return sha[:7]
++
++
++# ---------------------------------------------------------------- state
++
++def _is_commit(repo, sha):
++    p = sh(["git", "cat-file", "-t", sha], repo)
++    return p.returncode == 0 and p.stdout.strip() == "commit"
++
++
++def load_stack(gitdir, repo):
++    """Return (stack, migrated). Stack entries are dicts:
++    {"sha": ..., "packet": filename-or-None, "ts": iso-or-None},
++    oldest first, newest last, at most STACK_CAP entries."""
++    path = os.path.join(gitdir, STATE_NAME)
++    stack = []
++    if os.path.exists(path):
++        try:
++            data = json.load(open(path, encoding="utf-8"))
++            for item in data.get("stack", []):
++                if isinstance(item, str):
++                    item = {"sha": item, "packet": None, "ts": None}
++                if item.get("sha") and _is_commit(repo, item["sha"]):
++                    stack.append(item)
++        except (ValueError, OSError):
++            stack = []
++    migrated = False
++    if not stack:
++        legacy = os.path.join(gitdir, LEGACY_STATE_NAME)
++        if os.path.exists(legacy):
++            cand = open(legacy, encoding="utf-8").read().strip()
++            if cand and _is_commit(repo, cand):
++                stack = [{"sha": cand, "packet": None, "ts": None}]
++                migrated = True
++    return stack[-STACK_CAP:], migrated
++
++
++def save_stack(gitdir, stack):
++    path = os.path.join(gitdir, STATE_NAME)
++    with open(path, "w", encoding="utf-8") as fh:
++        json.dump({"stack": stack[-STACK_CAP:]}, fh, indent=1)
++        fh.write("\n")
++
++
++def commit_line(repo, sha):
++    out = git(["log", "-1", "--format=%cs %s", sha], repo).strip()
++    return out or short(sha)
++
++
++# ------------------------------------------------------------- patterns
++
++def find_pattern_file():
++    env = os.environ.get("GATE_PATTERNS_FILE")
++    if env:
++        return env
++    tooling = os.path.dirname(os.path.dirname(
++        os.path.realpath(__file__)))
++    candidate = os.path.join(tooling, "patterns.txt")
++    return candidate if os.path.exists(candidate) else None
++
++
++def scan_packet(text):
++    """Pattern-scan the finished packet. Warnings only; never prints
++    matched text, just which pattern matched and at which packet line."""
++    path = find_pattern_file()
++    if not path or not os.path.exists(path):
++        print("Pattern scan: skipped -- no pattern list found "
++              "($GATE_PATTERNS_FILE unset, no patterns.txt at the "
++              "tooling root). A skip is not a pass.")
++        return
++    patterns = []
++    for raw in open(path, encoding="utf-8"):
++        line = raw.strip()
++        if line and not line.startswith("#"):
++            patterns.append(line)
++    lines = text.splitlines()
++    hits = []
++    bad = 0
++    for idx, pat in enumerate(patterns, 1):
++        try:
++            rx = re.compile(pat)
++        except re.error:
++            bad += 1
++            continue
++        for lineno, line in enumerate(lines, 1):
++            if rx.search(line):
++                hits.append((idx, lineno))
++                break
++    print("Pattern scan: %d pattern(s) loaded from %s."
++          % (len(patterns), path))
++    if bad:
++        print("Pattern scan: %d pattern(s) could not be compiled and "
++              "were skipped." % bad)
++    if hits:
++        print("Pattern scan: WARNING -- %d pattern(s) matched: %s"
++              % (len(hits), ", ".join("pattern #%d at packet line %d"
++                                      % h for h in hits)))
++        print("Pattern scan: review the packet before sharing it; if a "
++              "match is real instance data, do not send this packet.")
++    else:
++        print("Pattern scan: no matches.")
++
++
++# -------------------------------------------------------------- packet
++
++def changed_files(base, head, repo):
++    """Return [(status, old_path, new_path)] for base..head. Status in AMDRT."""
++    out = git(["diff", "--name-status", "-z", "-M",
++               "%s..%s" % (base, head)], repo)
++    entries, parts, i = [], out.split("\0"), 0
++    while i < len(parts):
++        token = parts[i]
++        if not token:
++            i += 1
++            continue
++        if token[0] == "R":  # R100<old><new>
++            entries.append(("R", parts[i + 1], parts[i + 2]))
++            i += 3
++        else:
++            entries.append((token[0], parts[i + 1], parts[i + 1]))
++            i += 2
++    return entries
++
++
++def file_text_at(head, path, repo):
++    p = sh(["git", "show", "%s:%s" % (head, path)], repo)
++    if p.returncode != 0 or "\0" in p.stdout:
++        return None  # submodule, or binary
++    return p.stdout
++
++
++def lang_for(path):
++    return LANG_BY_EXT.get(os.path.splitext(path)[1].lower(), "")
++
++
++def copy_to_clipboard(text):
++    if sys.platform == "darwin":
++        cmds = [["pbcopy"]]
++    elif sys.platform == "win32":
++        cmds = [["clip"]]
++    else:
++        cmds = []
++        for c in (["wl-copy"],
++                  ["xclip", "-selection", "clipboard"],
++                  ["xsel", "--clipboard", "--input"]):
++            if shutil.which(c[0]):
++                cmds = [c]
++                break
++        if not cmds:
++            return False
++    try:
++        p = subprocess.run(cmds[0], input=text, capture_output=True,
++                           text=True, errors="replace", timeout=15)
++        return p.returncode == 0
++    except Exception:
++        return False
++
++
++def resolve_base(args, repo, stack, head):
++    base = None
++    if args.base:
++        base = git(["rev-parse", "--verify", args.base], repo).strip()
++    elif stack:
++        base = stack[-1]["sha"]
++    if not base:
++        p = sh(["git", "rev-parse", "--verify", "HEAD~1"], repo)
++        base = p.stdout.strip() if p.returncode == 0 else EMPTY_TREE
++    if base != EMPTY_TREE:
++        p = sh(["git", "merge-base", "--is-ancestor", base, "HEAD"], repo)
++        if p.returncode != 0:
++            raise RuntimeError(
++                "base %s is not an ancestor of HEAD (history was "
++                "rewritten?). Pass --base explicitly or use --reset."
++                % short(base))
++    return base
++
++
++def per_commit_stats(base, head, repo):
++    """Return [(sha, subject, stat_text)] oldest-first for base..head."""
++    shas = git(["rev-list", "--reverse", "%s..%s" % (base, head)],
++               repo).strip().split()
++    out = []
++    for sha in shas:
++        subject = git(["log", "--format=%s", "-n", "1", sha], repo).strip()
++        stat = git(["show", "--stat", "--format=", sha], repo).strip()
++        out.append((short(sha), subject, stat))
++    return out
++
++
++def diff_block(text, title):
++    return "\n## %s\n\n```diff\n%s\n```\n" % (title, text.rstrip())
++
++
++def assemble(repo, repo_name, branch, base, head, commits, commit_stats,
++             entries, diff, full, unc_diff, budget):
++    notes = []
++    h = ["# Code review packet\n"]
++    h.append("- Repo: `%s` (branch `%s`)" % (repo_name, branch))
++    if base != head:
++        h.append("- Range: `%s..%s`" % (short(base), short(head)))
++        if commits:
++            h.append("- Commits:")
++            h.extend("  - " + c for c in commits.splitlines())
++    h.append("- Generated: %s UTC"
++             % datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
++    h.append("- Tree: `%s` (`git rev-parse HEAD^{tree}` -- the reviewed "
++             "tree; compare with the pushed side's tree to confirm "
++             "reviewed == pushed)"
++             % git(["rev-parse", "HEAD^{tree}"], repo).strip())
++    h.append("\n## Instructions for the reviewer\n\n"
++             + REVIEW_PROMPT.rstrip() + "\n")
++    if commit_stats:
++        h.append("\n## Per-commit stats\n")
++        for sha, subject, stat in commit_stats:
++            h.append("### `%s` %s\n\n```\n%s\n```" % (sha, subject, stat))
++    if entries:
++        h.append("\n## Changed files (%d)\n" % len(entries))
++        for st, old, new in entries:
++            if st == "R":
++                h.append("- renamed `%s` -> `%s`" % (old, new))
++            else:
++                h.append("- %s `%s`" % (STATUS_LABELS.get(st, st), new))
++    header = "\n".join(h) + "\n"
++
++    body = ""
++    if diff.strip() or not unc_diff.strip():
++        body = diff_block(diff, "Diff")
++    if unc_diff.strip():
++        body += diff_block(unc_diff, "Uncommitted changes (not yet committed)")
++    mandatory = header + body
++
++    if len(mandatory) > budget:
++        if unc_diff.strip():
++            body = diff_block(diff, "Diff")
++            mandatory = header + body
++            notes.append("uncommitted changes dropped from packet (over budget)")
++        if len(mandatory) > budget:
++            fence = "\n## Diff\n\n```diff\n\n```\n"
++            keep = budget - len(header) - len(fence) - 120
++            diff = (diff[:max(keep, 0)]
++                    + "\n... [diff truncated to fit the character budget] ...\n")
++            body = diff_block(diff, "Diff")
++            mandatory = header + body
++            notes.append("diff truncated to fit the character budget")
++
++    fparts = ["\n## Full file contents\n"]
++    remaining = budget - len(mandatory)
++    omitted = []
++    for path, text, reason in full:
++        if text is None:
++            omitted.append((path, reason))
++            continue
++        block = ("\n### `%s`\n\n```%s\n%s\n```\n"
++                 % (path, lang_for(path), text.rstrip()))
++        if len(block) <= remaining:
++            fparts.append(block)
++            remaining -= len(block)
++        else:
++            omitted.append((path, "over character budget"))
++    if omitted:
++        note = ("\n_Full text omitted for: "
++                + ", ".join("`%s` (%s)" % (p, r) for p, r in omitted)
++                + " -- review from the diff above._\n")
++        if len(mandatory + "".join(fparts) + note) > budget:
++            note = ("\n_Full text omitted for %d more file(s) "
++                    "-- review from the diff above._\n" % len(omitted))
++        fparts.append(note)
++
++    return mandatory + "".join(fparts), notes
++
++
++def ensure_review_dirs(repo):
++    """Create review/packets + review/feedback and the nested
++    .gitignore that keeps the whole folder local-only."""
++    review = os.path.join(repo, "review")
++    os.makedirs(os.path.join(review, "packets"), exist_ok=True)
++    os.makedirs(os.path.join(review, "feedback"), exist_ok=True)
++    gi = os.path.join(review, ".gitignore")
++    if not os.path.exists(gi):
++        with open(gi, "w", encoding="utf-8") as fh:
++            fh.write(REVIEW_GITIGNORE)
++    return review
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(
++        description="Build a review packet: one self-contained markdown "
++                    "file covering a commit range (commit list, stats, "
++                    "diff, full changed-file texts), ready to hand to "
++                    "any reviewer.")
++    ap.add_argument("--repo", default=".",
++                    help="repo path (default: current directory)")
++    ap.add_argument("--base", default=None,
++                    help="start the packet at this ref instead of where "
++                         "the last packet ended (any commit, tag or "
++                         "branch; applies to this packet only)")
++    ap.add_argument("--out", default=None,
++                    help="output file (default: a timestamped file "
++                         "under review/packets/ in the repo; '-' = stdout)")
++    ap.add_argument("--copy", dest="copy", action="store_true", default=True,
++                    help="copy packet to clipboard (default on)")
++    ap.add_argument("--no-copy", dest="copy", action="store_false",
++                    help="do not copy to clipboard")
++    ap.add_argument("--budget", type=int, default=100_000,
++                    help="max packet size in characters (default 100000)")
++    ap.add_argument("--include-uncommitted", action="store_true",
++                    help="also include uncommitted working-tree changes")
++    ap.add_argument("--history", action="store_true",
++                    help="list the remembered packet endpoints "
++                         "(oldest first) and exit")
++    ap.add_argument("--rollback", type=int, default=None, metavar="N",
++                    help="rewind the memory by N packets and exit, so "
++                         "the next packet re-covers what those packets "
++                         "covered (for a packet generated but never sent)")
++    ap.add_argument("--reset", action="store_true",
++                    help="forget all remembered packet endpoints and "
++                         "exit; the next packet covers only the most "
++                         "recent commit")
++    args = ap.parse_args(argv)
++
++    ops = sum([bool(args.history), args.rollback is not None,
++               bool(args.reset)])
++    if ops > 1:
++        print("error: --history, --rollback and --reset are mutually "
++              "exclusive -- pick one.", file=sys.stderr)
++        return 2
++
++    try:
++        repo = git(["rev-parse", "--show-toplevel"], args.repo).strip()
++    except RuntimeError:
++        raise SystemExit("error: not inside a git repository")
++
++    gitdir = git(["rev-parse", "--absolute-git-dir"], args.repo).strip()
++    state_path = os.path.join(gitdir, STATE_NAME)
++    head = git(["rev-parse", "HEAD"], repo).strip()
++    branch = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
++                repo).stdout.strip()
++    stack, migrated = load_stack(gitdir, repo)
++    if migrated:
++        print("Note: seeded the packet memory from the legacy "
++              "last-reviewed marker (%s)." % short(stack[-1]["sha"]))
++
++    if args.history:
++        if not stack:
++            print("No packets recorded yet -- the memory is empty. "
++                  "The next packet starts from the most recent commit "
++                  "(HEAD~1), or from --base if given.")
++            return 0
++        print("Remembered packet endpoints (oldest first; the next "
++              "packet starts after #%d):" % len(stack))
++        for i, item in enumerate(stack, 1):
++            extra = "  [%s]" % item["packet"] if item.get("packet") else ""
++            print("  #%d  %s  %s%s"
++                  % (i, short(item["sha"]), commit_line(repo, item["sha"]),
++                     extra))
++        return 0
++
++    if args.rollback is not None:
++        n = args.rollback
++        if n < 1:
++            print("error: --rollback needs a count of at least 1.",
++                  file=sys.stderr)
++            return 2
++        if not stack:
++            print("error: nothing to roll back -- no packets are "
++                  "recorded for this repo.", file=sys.stderr)
++            return 2
++        if n > len(stack):
++            print("error: cannot roll back %d packet(s) -- only %d "
++                  "endpoint(s) are remembered (oldest: %s)."
++                  % (n, len(stack), short(stack[0]["sha"])),
++                  file=sys.stderr)
++            return 2
++        dropped = stack[-n:]
++        stack = stack[:-n]
++        save_stack(gitdir, stack)
++        print("Rolled back %d packet(s): %s"
++              % (n, ", ".join(short(d["sha"]) for d in dropped)))
++        if stack:
++            print("The next packet will start after %s (%s)."
++                  % (short(stack[-1]["sha"]),
++                     commit_line(repo, stack[-1]["sha"])))
++        else:
++            print("The memory is now empty -- the next packet starts "
++                  "from the most recent commit (HEAD~1), or from "
++                  "--base if given.")
++        return 0
++
++    if args.reset:
++        for name in (STATE_NAME, LEGACY_STATE_NAME):
++            p = os.path.join(gitdir, name)
++            if os.path.exists(p):
++                os.remove(p)
++        print("Forgot all remembered packet endpoints. The next packet "
++              "starts from the most recent commit (HEAD~1), or from "
++              "--base if given.")
++        return 0
++
++    base = resolve_base(args, repo, stack, head)
++    unc_diff = (git(["diff", "--no-color", "-M", "HEAD"], repo)
++                if args.include_uncommitted else "")
++
++    if base == head and not unc_diff.strip():
++        print("Nothing new since the last review packet. "
++              "(--rollback N to re-cover a previous range, --reset to "
++              "forget the memory, --base REF for a custom range)")
++        return 0
++
++    commits = (git(["log", "--oneline", "%s..%s" % (base, head)], repo).strip()
++               if base != head else "")
++    commit_stats = (per_commit_stats(base, head, repo) if base != head else [])
++    diff = (git(["diff", "--no-color", "-M", "%s..%s" % (base, head)], repo)
++            if base != head else "")
++    entries = changed_files(base, head, repo) if base != head else []
++
++    full = []
++    for st, old, new in entries:
++        if st == "D":
++            full.append((new, None, "deleted"))
++            continue
++        text = file_text_at(head, new, repo)
++        if text is None:
++            full.append((new, None, "binary or submodule"))
++        elif len(text) > PER_FILE_CAP:
++            full.append((new, None, "larger than %d chars" % PER_FILE_CAP))
++        else:
++            full.append((new, text, None))
++
++    packet, notes = assemble(repo, os.path.basename(repo), branch, base,
++                             head, commits, commit_stats, entries, diff,
++                             full, unc_diff, args.budget)
++
++    default_out = args.out is None
++    if default_out:
++        review = ensure_review_dirs(repo)
++        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
++        span = ("%s-to-%s" % (short(base), short(head))
++                if base != head else "working-tree")
++        out = os.path.join(review, "packets",
++                           "packet-%s-%s.md" % (stamp, span))
++    else:
++        out = args.out
++    if out == "-":
++        sys.stdout.write(packet)
++    else:
++        with open(out, "w", encoding="utf-8") as fh:
++            fh.write(packet)
++
++    if base != head:
++        if not stack or stack[-1]["sha"] != head:
++            stack.append({
++                "sha": head,
++                "packet": (os.path.basename(out)
++                           if out != "-" else None),
++                "ts": datetime.now(timezone.utc).strftime(
++                    "%Y-%m-%dT%H:%M:%SZ"),
++            })
++            save_stack(gitdir, stack)
++
++    copied = copy_to_clipboard(packet) if args.copy else False
++
++    n_commits = len(commits.splitlines()) if commits else 0
++    print("Review packet ready: %s (%s chars, %d changed files)"
++          % (out if out != "-" else "stdout", f"{len(packet):,}",
++             len(entries)))
++    print("Range %s..%s on %s (%d commit(s))"
++          % (short(base), short(head), branch, n_commits))
++    if default_out:
++        print("Stored under review/packets/ -- local-only, covered by "
++              "review/.gitignore; reviewer feedback goes in "
++              "review/feedback/.")
++    for n in notes:
++        print("Note: %s" % n)
++    if copied:
++        print("Clipboard: copied.")
++    elif args.copy:
++        print("Clipboard: not copied (no clipboard tool found) -- "
++              "use the file.")
++    scan_packet(packet)
++    return 0
++
++
++if __name__ == "__main__":
++    try:
++        sys.exit(main())
++    except RuntimeError as e:
++        print("error: %s" % e, file=sys.stderr)
++        sys.exit(1)
+-- 
+2.43.0
+
