@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repo-kit — the repo-tooling installer. ONE entry point, five jobs:
+"""repo-kit — the repo-tooling installer. ONE entry point, six jobs:
 
     repo-kit init  [--tooling PATH] [REPO]
         Scaffold a repo from the tooling templates: PLAN.md,
@@ -42,6 +42,20 @@
         pull-request mode). Idempotent: an existing ruleset of the same
         name is updated in place, never duplicated. --dry-run prints
         every command and payload and executes nothing.
+
+    repo-kit packet [packet options]
+        Build a review packet (tools/review_packet.py): one
+        self-contained markdown file covering a commit range — commit
+        list, per-commit stats, diff, full changed-file texts — ready
+        to hand to any reviewer. Packets land in the repo's
+        review/packets/ folder (local-only, kept out of commits by
+        review/.gitignore; reviewer feedback goes in review/feedback/).
+        The tool remembers the last 10 packet endpoints in .git:
+        --history lists them, --rollback N rewinds the memory N packets
+        (for a packet generated but never sent), --reset clears it,
+        --base REF starts one packet at a custom ref. Every packet is
+        pattern-scanned after generation (warnings only). All packet
+        options pass through: `repo-kit packet --help` shows them.
 
 --tooling names a local tooling checkout in v0.1; fetching templates
 from a git URL (sparse checkout of templates/ + install/ + hooks/) is
@@ -378,7 +392,7 @@ def _provision_steps(args, owner, repo):
           "can_approve_pull_request_reviews": False}),
         ("Actions: approval for first-time contributors' fork "
          "workflows", "PUT",
-         f"{base}/actions/permissions/fork-pr-contribution-approval",
+         f"{base}/actions/permissions/fork-pr-contributor-approval",
          {"approval_policy": "first_time_contributors"}),
     ]
 
@@ -405,11 +419,29 @@ def _load_ruleset(tooling, args):
     return ruleset
 
 
+def _infer_target():
+    """OWNER/REPO from the current directory's git origin remote."""
+    proc = subprocess.run(["git", "remote", "get-url", "origin"],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    m = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?$",
+                  proc.stdout.strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
 def cmd_provision(tooling, args):
-    m = re.fullmatch(r"([\w.-]+)/([\w.-]+)", args.target or "")
+    target = args.target
+    if not target:
+        target = _infer_target()
+        if target:
+            say(f"no target given — using {target} (from this "
+                "directory's git origin remote)")
+    m = re.fullmatch(r"([\w.-]+)/([\w.-]+)", target or "")
     if not m:
         say("target must be OWNER/REPO, e.g. "
-            "repo-kit provision octocat/hello-world --dry-run")
+            "repo-kit provision octocat/hello-world --dry-run — "
+            "or run inside a clone whose origin is on GitHub")
         return 2
     owner, repo = m.groups()
     base = f"repos/{owner}/{repo}"
@@ -444,11 +476,13 @@ def cmd_provision(tooling, args):
         body = json.dumps(ruleset, indent=2)
         print("\n".join(f"    {ln}" for ln in body.splitlines()))
         if args.variant == "B" and not args.bypass_user_id:
-            print("\n  NOTE (variant B): the standard also puts YOU "
-                  "on the ruleset bypass list in pull-request mode, "
-                  "so you can merge your own PRs while the approval "
-                  "rule binds token holders. Pass --bypass-user-id "
-                  "<your numeric GitHub user id> to include that.")
+            print("\n  NOTE (variant B): at run time (not in a dry "
+                  "run) your numeric GitHub user id is resolved "
+                  "automatically from the authenticated gh user and "
+                  "added to the ruleset bypass list in pull-request "
+                  "mode, so you can merge your own PRs while the "
+                  "approval rule binds token holders. Pass "
+                  "--bypass-user-id to pin a specific id instead.")
         print("\nDry run only — no commands were executed.")
         return 0
 
@@ -456,6 +490,24 @@ def cmd_provision(tooling, args):
         say("the GitHub CLI (`gh`) is required for provisioning — "
             "install it and run `gh auth login` first")
         return 2
+    if args.variant == "B" and not args.bypass_user_id:
+        rc, out, err = _gh_api("GET", "user", None)
+        uid = None
+        if rc == 0:
+            try:
+                uid = int(json.loads(out)["id"])
+            except (ValueError, KeyError, TypeError):
+                uid = None
+        if not uid:
+            say("variant B needs your numeric GitHub user id for "
+                "the ruleset bypass list, and `gh api user` did not "
+                "return one — check `gh auth status`, or pass "
+                "--bypass-user-id explicitly")
+            return 2
+        args.bypass_user_id = uid
+        ruleset = _load_ruleset(tooling, args)
+        say(f"variant B: bypass actor = you (GitHub user id {uid}, "
+            "resolved from the authenticated gh user)")
     for label, method, path, payload in steps:
         rc, out, err = _gh_api(method, path, payload)
         if rc != 0:
@@ -499,17 +551,67 @@ def cmd_init(tooling, repo):
             os.path.join(tooling, "templates", "workflows", name),
             os.path.join(repo, ".github", "workflows", name),
             f".github/workflows/{name}")
+    copy_if_absent(os.path.join(tooling, "templates", "review",
+                                ".gitignore"),
+                   os.path.join(repo, "review", ".gitignore"),
+                   "review/.gitignore")
+    for sub in ("packets", "feedback"):
+        os.makedirs(os.path.join(repo, "review", sub), exist_ok=True)
+    say("review/ seeded: packets + feedback folders (local-only — "
+        "everything under review/ except its .gitignore is ignored)")
     merge_gitignore(tooling, repo)
     install_hooks(tooling, repo)
     say("done. Next: edit project.public.yaml + PLAN.md, add the "
         "GATE_PATTERNS repo secret, enable Pages (source: GitHub Actions).")
 
 
+def cmd_packet_dispatch(rest):
+    """`repo-kit packet ...` — forwarded to tools/review_packet.py.
+
+    Handled outside argparse on purpose: the packet tool has its own
+    option set, and argparse would reject the tool's flags as
+    unrecognized instead of passing them through. An optional
+    --tooling PATH (or --tooling=PATH) anywhere in the arguments is
+    consumed here; everything else reaches the packet tool verbatim.
+    """
+    tooling = os.path.dirname(os.path.dirname(
+        os.path.realpath(__file__)))
+    forwarded = []
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--tooling" and i + 1 < len(rest):
+            tooling = rest[i + 1]
+            i += 2
+        elif arg.startswith("--tooling="):
+            tooling = arg.split("=", 1)[1]
+            i += 1
+        else:
+            forwarded.append(arg)
+            i += 1
+    tooling = os.path.abspath(tooling)
+    script = os.path.join(tooling, "tools", "review_packet.py")
+    if not os.path.exists(script):
+        say(f"packet tool not found at {script}")
+        return 2
+    proc = subprocess.run([sys.executable, script, *forwarded])
+    return proc.returncode
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "packet":
+        return cmd_packet_dispatch(argv[1:])
     default_tooling = os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))
-    ap = argparse.ArgumentParser(description=__doc__)
-    sub = ap.add_subparsers(dest="command", required=True)
+        os.path.realpath(__file__)))
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="packet: build a review packet for a commit range — "
+               "run `repo-kit packet --help` for its options (it is "
+               "dispatched separately; its flags pass through).")
+    sub = ap.add_subparsers(dest="command", required=True,
+                            metavar="{init,hooks,env,setup,provision,"
+                                    "packet}")
     for name in ("init", "hooks"):
         sp = sub.add_parser(name)
         sp.add_argument("repo", nargs="?", default=".")
@@ -532,8 +634,10 @@ def main(argv=None):
     sp.add_argument("--no-tailnet", action="store_true")
     sp.add_argument("--no-paths", action="store_true")
     sp = sub.add_parser("provision")
-    sp.add_argument("target", help="OWNER/REPO of the GitHub repo to "
-                                   "bring up to the setup standard")
+    sp.add_argument("target", nargs="?", default=None,
+                    help="OWNER/REPO of the GitHub repo to bring up to "
+                         "the setup standard (default: inferred from "
+                         "the current directory's git origin remote)")
     sp.add_argument("--tooling", default=default_tooling)
     sp.add_argument("--variant", choices=["A", "B"], default="A",
                     help="ruleset variant: A = solo repo, no agent or "
@@ -555,9 +659,10 @@ def main(argv=None):
                          "(repeatable; default: the template's — the "
                          "gate workflow's 'gate / gate')")
     sp.add_argument("--bypass-user-id", type=int, default=None,
-                    help="variant B: your numeric GitHub user id — "
-                         "added to the ruleset bypass list in "
-                         "pull-request mode, per the standard")
+                    help="variant B: numeric GitHub user id for the "
+                         "ruleset bypass list (pull-request mode, per "
+                         "the standard); default: resolved "
+                         "automatically from the authenticated gh user")
     args = ap.parse_args(argv)
     tooling = os.path.abspath(args.tooling)
     if not os.path.isdir(os.path.join(tooling, "templates")):
@@ -569,6 +674,8 @@ def main(argv=None):
         return cmd_env(tooling, args)
     if args.command == "provision":
         return cmd_provision(tooling, args)
+    if args.command == "packet":  # unreachable: handled in main()
+        return 2
     repo = os.path.abspath(args.repo)
     if args.command == "init":
         cmd_init(tooling, repo)
