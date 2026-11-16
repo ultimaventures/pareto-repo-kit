@@ -378,7 +378,7 @@ def _provision_steps(args, owner, repo):
           "can_approve_pull_request_reviews": False}),
         ("Actions: approval for first-time contributors' fork "
          "workflows", "PUT",
-         f"{base}/actions/permissions/fork-pr-contribution-approval",
+         f"{base}/actions/permissions/fork-pr-contributor-approval",
          {"approval_policy": "first_time_contributors"}),
     ]
 
