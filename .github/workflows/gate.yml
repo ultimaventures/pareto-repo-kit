@@ -35,12 +35,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Checkout tooling
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.tooling_repo }}
           ref: ${{ inputs.tooling_ref }}
           path: .repo-tooling
+          persist-credentials: false
       - name: Install gitleaks (pinned 8.30.1 — newest published release)
         # CVE-2026-124039 names 8.30.2 as its fix version, but 8.30.2 was
         # not published upstream as of 2026-11-12 (verified in the devbox
@@ -58,8 +60,8 @@ jobs:
         # Only for repos that have workflows. Zizmor = security audit
         # (template injection, unpinned actions, excess permissions);
         # actionlint = syntax/expression correctness. Versions pinned;
-        # bump deliberately. (Release-asset names to be re-verified on
-        # first live run.)
+        # bump deliberately. (Pins verified live 2026-11-17: zizmor
+        # 1.11.0 via pip, actionlint 1.7.7 release tarball.)
         run: |
           if [ -d .github/workflows ]; then
             pip install --quiet "zizmor==1.11.0"
@@ -72,17 +74,24 @@ jobs:
             echo "no .github/workflows — workflow lint skipped"
           fi
       - name: Personal-pattern + format checks
+        # Event values arrive via env, never ${{ }} expansion inside the
+        # run block: a PR author controls the base branch name, and inline
+        # expansion would let shell metacharacters in it inject commands
+        # (zizmor template-injection, found on the first live run).
         env:
           GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
         run: |
           if [ -n "$GATE_PATTERNS" ]; then
             printf '%s\n' "$GATE_PATTERNS" > /tmp/gate-patterns.txt
             export GATE_PATTERNS_FILE=/tmp/gate-patterns.txt
           fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            RANGE="origin/${{ github.base_ref }}..HEAD"
-          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            RANGE="${{ github.event.before }}..HEAD"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/${BASE_REF}..HEAD"
+          elif [ "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${EVENT_BEFORE}..HEAD"
           else
             RANGE="HEAD~1..HEAD"
           fi
