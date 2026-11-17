@@ -12,7 +12,7 @@ commit as the work itself**:
 
 ## Next steps
 
-- [ ] ns-1 · Publish v0.1.0: create the public repo, push the prepared
+- [x] ns-1 · Publish v0.1.0: create the public repo, push the prepared
   history and the v0.1.0 tag together, add the GATE_PATTERNS repository
   secret, enable Pages (source: GitHub Actions), then apply the setup
   standard to this repo with `repo-kit provision` (dogfooding the tool
