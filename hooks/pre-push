@@ -5,55 +5,426 @@
 # Adding a check to the toolkit = dropping a script into tools/checks/;
 # repos pick it up on their next `repo-kit hooks` refresh (or immediately,
 # since the hook reads the tooling checkout, not a copy).
-# TOOLING_HOME is baked in at install time; REPO_TOOLING_HOME overrides.
 #
-# CHECK PROFILES (devbox, 2026-11-12): REPOKIT_CHECK_PROFILE selects
-# which checks run. Unset or "full" = every executable check, as
-# always. "security" = only the checks that stop secrets and personal
-# patterns — 10-pattern-and-format.sh and 20-gitleaks.sh — for
-# sessions that push but do no development of their own (devbox's
-# review instance, ADR-016 there). Any OTHER value fails closed:
-# a typo must never silently run everything — or nothing.
+# TWO MODES (v0.4.3). Personal mode is the default: the gate is the
+# user's own guardrail — configuration may come from the user's shell,
+# and the escape hatches (repo-kit checks --off, repo-kit override)
+# work. One thing DOES stop a personal-mode push (v0.4.6): a COVERAGE
+# GAP — a check that cannot run at all (missing pattern list,
+# missing gitleaks/shellcheck) — which asks on the terminal and
+# fails closed without one, because a warning that scrolls past is
+# how gaps ship. (Content a scanner cannot SEE is not in the class
+# since v0.4.7: the gate's scanners are attribute-immune, so there
+# is nothing left to ask about there.) AGENT mode is
+# on when hooks/enforced.marker exists in the tooling checkout
+# (created by `repo-kit enforce on`, normally by the supervisor who
+# builds the agent's container, where the file sits inside a
+# read-only mount the agent cannot change). In agent mode this
+# dispatcher takes NO gate-critical input from the shell: the
+# tooling path is never read from the environment, and the check
+# profile comes from the supervisor-written hooks/enforced.env.
+# Anything the agent's shell can set, the agent can fake; agent
+# mode therefore only believes files the agent cannot write.
+#
+# AMBIENT STATE (v0.4.4, reviewer round 4 item 1): locking the
+# configuration was not enough — the gate's own tools run on
+# ambient process state the shell also controls. In agent mode,
+# immediately after the marker test (before anything external
+# runs beyond it), this dispatcher pins PATH to a trusted value
+# and scrubs the environment: every GIT_* and GITLEAKS_* variable,
+# the PYTHON* interpreter variables, and the dynamic-loader
+# variables (LD_*/DYLD_*). The check scripts inherit the scrubbed
+# environment. The full inventory of gate inputs lives in
+# templates/agent-enforced/README.md.
+#
+# TOOLING_HOME is baked in at install time. In a raw (never
+# installed) copy it is derived from this script's own location.
+# It is NEVER taken from the environment (pre-v0.4.3 the
+# REPO_TOOLING_HOME variable could redirect the hook at a fake
+# checkout — reviewer round 3 item 1).
+#
+# CHECK PROFILES: the profile selects which checks run. Unset or
+# "full" = every executable check. "security" = only the checks
+# that stop secrets and personal patterns — 10-pattern-and-format.sh
+# and 20-gitleaks.sh — for sessions that push but do no development
+# of their own. In personal mode the profile comes from
+# REPOKIT_CHECK_PROFILE; in agent mode from hooks/enforced.env
+# (default "security" — an agent session is a security session
+# unless the supervisor says otherwise). Any OTHER value fails
+# closed: a typo must never silently run everything — or nothing.
 set -u
-TOOLING_HOME="${REPO_TOOLING_HOME:-__TOOLING_HOME__}"
+TOOLING_HOME="__TOOLING_HOME__"
+# Placeholder test, written split on purpose: the installer
+# substitutes the placeholder by replacing its literal text
+# EVERYWHERE in this file, so spelling it whole here would make
+# the test match the baked path itself and misfire on every
+# installed copy (found by the v0.4.3 tests, first build).
+if [ "$TOOLING_HOME" = "__TOOLING""_HOME__" ]; then
+  # Pure shell expansion, no external command: in agent mode
+  # nothing external may run before PATH is pinned (round 4).
+  case "$0" in
+    */*) TOOLING_HOME=$(cd "${0%/*}/.." && pwd) ;;
+    *) TOOLING_HOME=$(pwd) ;;
+  esac
+fi
 if [ ! -d "$TOOLING_HOME/tools/checks" ]; then
   echo "repo-tooling: tooling checkout not found at $TOOLING_HOME —" >&2
-  echo "set REPO_TOOLING_HOME or re-run repo-kit hooks. Push not checked." >&2
+  echo "re-run repo-kit hooks. Push not checked." >&2
   exit 1
 fi
-PROFILE="${REPOKIT_CHECK_PROFILE:-full}"
+AGENT_MODE=0
+[ -f "$TOOLING_HOME/hooks/enforced.marker" ] && AGENT_MODE=1
+export REPOKIT_AGENT_MODE="$AGENT_MODE"
+# Set BY this dispatcher from its baked/derived path — the one
+# tooling-home variable the check scripts may believe, because it
+# is written here, never read from the incoming environment.
+export REPOKIT_TOOLING_HOME="$TOOLING_HOME"
+# Read one key from hooks/enforced.env — THE grammar, shared
+# with ci_checks.py's parser (v0.4.8, secondary review pass 4:
+# the two parsers had drifted — duplicate keys resolved first-
+# here and last-there, indented lines were visible to one and
+# not the other, and quote stripping differed). The grammar:
+# lines are KEY=VALUE; blank lines and # comments are skipped;
+# whitespace is allowed before the key, around the =, and
+# around the value (v0.4.8 fix pass, secondary review item 10:
+# `KEY =value` and `KEY= value` both parse, matching the Python
+# parser); the value is stripped of surrounding whitespace and
+# of ONE pair of matching surrounding quotes (unpaired or mixed
+# quotes are literal); when a key appears twice, the LAST line
+# wins. Only used after PATH is pinned in agent mode.
+_env_value() {
+  _raw=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" \
+    "$TOOLING_HOME/hooks/enforced.env" 2>/dev/null \
+    | tail -n 1 | tr -d '\r')
+  _raw=$(printf '%s' "$_raw" | sed -e 's/[[:space:]]*$//')
+  _raw=$(printf '%s' "$_raw" | sed -e 's/^[[:space:]]*//')
+  case "$_raw" in
+    \"*\") _raw=$(printf '%s' "$_raw" | sed -e 's/^"//' -e 's/"$//') ;;
+    \'*\') _raw=$(printf '%s' "$_raw" | sed -e "s/^'//" -e "s/'\$//") ;;
+  esac
+  printf '%s' "$_raw"
+}
+if [ "$AGENT_MODE" -eq 1 ]; then
+  # An enforced.env that exists but cannot be read must SAY so:
+  # _env_value reads it through 2>/dev/null, which would
+  # otherwise turn a permissions mismatch (the container runs
+  # as a different uid than the file's owner) into silent
+  # defaults (round 5 item 5).
+  if [ -f "$TOOLING_HOME/hooks/enforced.env" ] && \
+     [ ! -r "$TOOLING_HOME/hooks/enforced.env" ]; then
+    echo "repo-tooling: hooks/enforced.env exists but is UNREADABLE (permissions) —" >&2
+    echo "the supervisor's settings cannot be applied. Fix the file's" >&2
+    echo "permissions or the container's user. Push NOT checked and NOT allowed." >&2
+    exit 1
+  fi
+  # Pin PATH and scrub the ambient environment BEFORE parsing
+  # anything or running any check (round 4 item 1). The default
+  # path covers system git/python3/gitleaks on Linux and macOS
+  # (Homebrew included); a supervisor whose tools live elsewhere
+  # sets REPOKIT_TRUSTED_PATH in enforced.env — the file is
+  # supervisor-written, so believing it is safe, and the re-pin
+  # below still happens before any check runs.
+  PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+  export PATH
+  for _v in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+    case "$_v" in
+      GIT_*|GITLEAKS_*|PYTHON*|LD_*|DYLD_*|REPO_TOOLING_HYGIENE_FALLBACK|REPOKIT_ALLOW_COVERAGE_GAPS|REPOKIT_GAP_STATE) unset "$_v" ;;
+    esac
+  done
+  # The global gitconfig lives under the agent's HOME and can
+  # name an attributes file (core.attributesFile) — a side door
+  # that would resurrect the -diff trick for diff-based tools
+  # (round 5 item 3). Point git at an empty global config. The
+  # SYSTEM config is deliberately NOT blinded (no
+  # GIT_CONFIG_NOSYSTEM): in the container model it is
+  # root-owned, so the non-root agent cannot write it — and the
+  # supervisor's own hook pin may legitimately live there
+  # (owner ruling, 2026-11-18: do not adopt a restriction that
+  # burdens the supervisor without closing the actual hole —
+  # NOSYSTEM never touched the committed-.gitattributes route,
+  # which is covered by construction: the pattern tier extracts
+  # content from blobs and gitleaks runs with --text, so no
+  # scanner consumes an attribute-filtered diff).
+  GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_GLOBAL
+  _trusted=$(_env_value REPOKIT_TRUSTED_PATH)
+  if [ -n "$_trusted" ]; then
+    PATH="$_trusted"
+    export PATH
+  fi
+  PROFILE=$(_env_value REPOKIT_CHECK_PROFILE)
+  PROFILE="${PROFILE:-security}"
+else
+  PROFILE="${REPOKIT_CHECK_PROFILE:-full}"
+fi
+export REPOKIT_CHECK_PROFILE="$PROFILE"
 case "$PROFILE" in
   full|security) ;;
   *)
-    echo "repo-tooling: unknown REPOKIT_CHECK_PROFILE '$PROFILE' —" >&2
-    echo "want 'full' or 'security' (or unset). Push NOT checked and NOT allowed:" >&2
+    echo "repo-tooling: unknown check profile '$PROFILE' —" >&2
+    echo "want 'full' or 'security'. Push NOT checked and NOT allowed:" >&2
     echo "a misspelled profile must fail closed, never silently skip or run checks." >&2
     exit 1
     ;;
 esac
 cd "$(git rev-parse --show-toplevel)" || exit 1
-if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
-  RANGE="origin/main..HEAD"
-else
-  RANGE="HEAD~1..HEAD"
+# Per-repo check disable (personal mode only): a repo may carry
+# repokit.disabled-checks in its git config (managed with
+# `repo-kit checks --off <name>`) naming checks to skip — the
+# escape hatch for a check that cannot run in someone's
+# environment, so one broken piece never locks them out of their
+# own repo. In AGENT mode the list is ignored: there, which checks
+# run is the supervisor's decision, and the list's presence is
+# reported, not honored.
+DISABLED_NORM=""
+_raw_disabled=$(git config --get repokit.disabled-checks 2>/dev/null || true)
+if [ -n "$_raw_disabled" ]; then
+  if [ "$AGENT_MODE" -eq 1 ]; then
+    echo "repo-tooling: this repo disables checks ($_raw_disabled) but" >&2
+    echo "this install is in AGENT mode (hooks/enforced.marker) — the" >&2
+    echo "disable list is IGNORED; the supervisor controls which" >&2
+    echo "checks run here." >&2
+  else
+    DISABLED_NORM=$(printf '%s' "$_raw_disabled" | tr ' ' ',' | tr '[:upper:]' '[:lower:]')
+    set -f
+    for _entry in $(printf '%s' "$DISABLED_NORM" | tr ',' ' '); do
+      case "$_entry" in
+        patterns|gitleaks|hygiene|file-hygiene|shellcheck| \
+        10-pattern-and-format.sh|20-gitleaks.sh|30-file-hygiene.sh| \
+        40-shellcheck.sh) ;;
+        *) echo "repo-tooling: unknown check name '$_entry' in" >&2
+           echo "repokit.disabled-checks — ignored (see repo-kit checks)." >&2 ;;
+      esac
+    done
+    set +f
+  fi
 fi
-fail=0
-for check in "$TOOLING_HOME"/tools/checks/*.sh; do
-  [ -x "$check" ] || continue
-  if [ "$PROFILE" = "security" ]; then
-    case "$(basename "$check")" in
-      10-pattern-and-format.sh|20-gitleaks.sh) ;;
-      *) continue ;;
+check_disabled() {
+  # $1 = check script basename. Friendly names and exact basenames
+  # both count; "file-hygiene" is accepted for "hygiene".
+  [ -n "$DISABLED_NORM" ] || return 1
+  case "$1" in
+    10-pattern-and-format.sh) _key="patterns" ;;
+    20-gitleaks.sh) _key="gitleaks" ;;
+    30-file-hygiene.sh) _key="hygiene" ;;
+    40-shellcheck.sh) _key="shellcheck" ;;
+    *) _key="" ;;
+  esac
+  case ",$DISABLED_NORM," in
+    *",$1,"*) return 0 ;;
+  esac
+  [ -n "$_key" ] || return 1
+  case ",$DISABLED_NORM," in
+    *",$_key,"*) return 0 ;;
+  esac
+  if [ "$_key" = "hygiene" ]; then
+    case ",$DISABLED_NORM," in
+      *",file-hygiene,"*) return 0 ;;
     esac
   fi
-  echo "— check: $(basename "$check")"
-  if ! "$check" "$RANGE"; then
-    fail=1
+  return 1
+}
+# Which commits to scan: the ref lines git sends on stdin
+# ("<local ref> <local sha> <remote ref> <remote sha>", one per
+# pushed ref) — scan exactly the commits each ref update carries
+# (v0.4.2, reviewer round 2 item 1; the old code ignored stdin and
+# always scanned origin/main..HEAD, the wrong commits for side
+# branches, other remotes, tags, and a repo's first push, where
+# the fallback scanned only the tip commit).
+REMOTE_NAME="${1:-}"
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+# Ranges live in a newline-delimited shell VARIABLE: not a
+# space-joined string (a multi-boundary range is a rev-list
+# EXPRESSION with spaces — "<tip> --not <b1> <b2>" — which
+# word-splitting would shred), and not a temp file (v0.4.4's
+# approach; round 5 item 3: the file sat under the agent-chosen
+# TMPDIR, where a same-uid process could truncate it mid-run
+# and empty the scan set). The consumer loop at the bottom
+# reads them back through a heredoc, which runs in THIS shell
+# — no pipeline subshell — so its fail flag survives.
+RANGES_NL=""
+SAW_REFS=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  SAW_REFS=1
+  # The all-zeros sentinel, at whatever length this repo's object
+  # format uses — a fixed 40-char ZERO never matches in a SHA-256
+  # repo (v0.4.3, reviewer round 3 item 7).
+  _zeros=$(printf '%s' "$local_sha" | sed 's/[0-9a-f]/0/g')
+  [ "$local_sha" = "$_zeros" ] && continue  # a deletion carries no commits
+  _rzeros=$(printf '%s' "$remote_sha" | sed 's/[0-9a-f]/0/g')
+  if [ "$remote_sha" = "$_rzeros" ]; then
+    # A ref the remote does not have yet: the commits in local_sha
+    # that the remote does not already hold on ANY of its refs.
+    # The range base is the boundary — the newest commits the
+    # remote DOES hold (v0.4.3, reviewer round 3 item 7: the old
+    # tail-of-rev-list pick assumed a single root in date order
+    # and could exclude new commits under clock skew or multiple
+    # roots). With ONE boundary the range is the familiar
+    # boundary..local. With SEVERAL, the checks get a single
+    # rev-list expression — local --not <every boundary> — which
+    # names exactly the new-commit set: one range per boundary
+    # rescanned the overlaps and could sweep in commits the
+    # remote already holds (v0.4.4, reviewer round 4 item 7,
+    # resolved as the full contract change: EVERY check consumes
+    # the same expression form; see the check scripts).
+    if [ "$AGENT_MODE" -eq 1 ]; then
+      # AGENT mode (v0.4.8, secondary review pass 4): the
+      # boundary computation below reads LOCAL remote-tracking
+      # refs — ordinary files under .git that the gated process
+      # can write — so a forged ref could mark its own commit
+      # "already held by the remote" and shrink the scan set to
+      # nothing, and CI cannot backstop it (the strict pattern
+      # list never runs there). Local refs are not believed in
+      # agent mode: a new ref scans the tip's WHOLE history
+      # (a bare tip is the range). A legitimately huge first
+      # push that hits the pattern service's size cap has the
+      # supervisor's release valve: repo-kit allow-oversize.
+      RANGES_NL="${RANGES_NL}$local_sha
+"
+      continue
+    fi
+    if [ -n "$REMOTE_NAME" ]; then
+      NOT_REMOTE="--remotes=$REMOTE_NAME"
+    else
+      NOT_REMOTE="--remotes"
+    fi
+    _out=$(git rev-list --boundary "$local_sha" --not "$NOT_REMOTE" 2>/dev/null)
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+      # A FAILED rev-list is not an empty one (v0.4.8 fix pass,
+      # secondary review item 15): it used to read as "the
+      # remote already holds everything" and scan nothing for
+      # this ref, and SAW_REFS is already 1 so the no-refs
+      # fallback below cannot rescue it. Fall back to scanning
+      # the tip's whole history — the bare-tip range, exactly
+      # as the agent-mode branch above does — with a notice.
+      # Never silently scan nothing.
+      echo "repo-tooling: the boundary computation for $local_sha failed" >&2
+      echo "— the whole history of the tip will be scanned instead." >&2
+      RANGES_NL="${RANGES_NL}$local_sha
+"
+      continue
+    fi
+    # Empty output = the remote already holds every commit in
+    # local_sha (a new tag or branch at an old commit): nothing
+    # new is published, so nothing is scanned.
+    [ -n "$_out" ] || continue
+    _bounds=$(printf '%s\n' "$_out" | sed -n 's/^-//p')
+    if [ -z "$_bounds" ]; then
+      RANGES_NL="${RANGES_NL}$EMPTY_TREE..$local_sha
+"
+    else
+      # Word-splitting is safe and intended: _bounds is boundary
+      # SHAs this git just printed, nothing else.
+      # shellcheck disable=SC2086
+      set -- $_bounds
+      if [ "$#" -eq 1 ]; then
+        RANGES_NL="${RANGES_NL}$1..$local_sha
+"
+      else
+        _expr="$local_sha --not"
+        for _b in $_bounds; do _expr="$_expr $_b"; done
+        RANGES_NL="${RANGES_NL}$_expr
+"
+      fi
+    fi
+  else
+    RANGES_NL="${RANGES_NL}$remote_sha..$local_sha
+"
   fi
 done
+if [ -z "$RANGES_NL" ] && [ "$SAW_REFS" -eq 0 ]; then
+  # No ref lines arrived at all (a manual run): fall back to the
+  # historical local range so a hand-run still checks the recent
+  # work. (Ref lines that were ALL deletions leave the list empty
+  # on purpose: a deletion publishes nothing, so nothing is
+  # scanned and the push proceeds.)
+  if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    RANGES_NL="origin/main..HEAD
+"
+  else
+    RANGES_NL="HEAD~1..HEAD
+"
+  fi
+fi
+# Coverage-gap answers are memoized per push (v0.4.7, round 6
+# item 5): the dispatcher owns a state file in the gated
+# repo's .git directory, the checks' shared helper
+# (tools/coverage_gap.py) records each distinct gap's answer
+# in it, and it is removed when the push ends. Personal mode
+# only — agent mode never asks (and the scrub above removes
+# a forged REPOKIT_GAP_STATE from an agent's environment).
+if [ "$AGENT_MODE" -ne 1 ]; then
+  _gitdir=$(git rev-parse --git-dir 2>/dev/null || echo .git)
+  REPOKIT_GAP_STATE=$(mktemp "$_gitdir/repokit-gap.XXXXXX" 2>/dev/null || echo "")
+  if [ -n "$REPOKIT_GAP_STATE" ]; then
+    export REPOKIT_GAP_STATE
+    trap 'rm -f "$REPOKIT_GAP_STATE"' EXIT
+  fi
+  if [ "${REPOKIT_ALLOW_COVERAGE_GAPS:-}" = "1" ]; then
+    echo "repo-tooling: NOTE — REPOKIT_ALLOW_COVERAGE_GAPS is set:" >&2
+    echo "coverage gaps will be ACCEPTED without asking. If you did" >&2
+    echo "not set it for this push, it may be exported permanently" >&2
+    echo "(check your shell startup files)." >&2
+  fi
+fi
+
+fail=0
+while IFS= read -r RANGE; do
+  [ -n "$RANGE" ] || continue
+  _eligible=0
+  _ran=0
+  for check in "$TOOLING_HOME"/tools/checks/*.sh; do
+    [ -x "$check" ] || continue
+    if [ "$PROFILE" = "security" ]; then
+      case "$(basename "$check")" in
+        10-pattern-and-format.sh|20-gitleaks.sh) ;;
+        *) continue ;;
+      esac
+    fi
+    _eligible=$((_eligible + 1))
+    if check_disabled "$(basename "$check")"; then
+      echo "— check skipped (disabled in this repo): $(basename "$check")"
+      continue
+    fi
+    echo "— check: $(basename "$check") (range: $RANGE)"
+    _ran=$((_ran + 1))
+    # </dev/null (v0.4.8, pass 4): this loop's stdin is the
+    # heredoc of ranges — a check that reads stdin would eat
+    # the remaining ranges and silently uncheck them.
+    if ! "$check" "$RANGE" </dev/null; then
+      fail=1
+    fi
+  done
+  if [ "$_eligible" -eq 0 ]; then
+    # ZERO checks ran for this range (v0.4.8, pass 4): an empty
+    # or non-executable tools/checks/, or a profile matching
+    # nothing, used to exit 0 — a green gate that checked
+    # nothing, in agent mode too. (Eligible-but-all-disabled is
+    # different: that is the owner's own per-repo choice, each
+    # skip printed above.) Agent mode fails closed; personal
+    # mode routes it through the coverage-gap decision.
+    if [ "$AGENT_MODE" -eq 1 ]; then
+      echo "repo-tooling: NO checks ran for range $RANGE — the tooling" >&2
+      echo "checkout's tools/checks/ holds no executable check for the" >&2
+      echo "'$PROFILE' profile. In agent mode an empty gate is a failed" >&2
+      echo "gate: the supervisor must restore the check scripts." >&2
+      fail=1
+    elif ! python3 -E -s "$TOOLING_HOME/tools/coverage_gap.py" \
+        "no checks ran for this push — tools/checks/ holds no executable check for the '$PROFILE' profile, so the gate would check nothing." \
+        "To fix: restore the check scripts in the tooling checkout (or re-run repo-kit hooks against a complete checkout). To proceed despite the gap for one push: REPOKIT_ALLOW_COVERAGE_GAPS=1 git push …" \
+        </dev/null; then
+      fail=1
+    fi
+  fi
+done <<REPOKIT_RANGES
+$RANGES_NL
+REPOKIT_RANGES
 if [ "$fail" -ne 0 ]; then
   echo "repo-tooling: a hard check failed — push stopped. Fix and re-push" >&2
-  echo "(warnings never stop a push; only hard failures do)." >&2
+  echo "(advisory warnings never stop a push; hard failures do — and an" >&2
+  echo "unconfirmed coverage gap counts as a hard failure by design)." >&2
   exit 1
 fi
 echo "repo-tooling: checks done."

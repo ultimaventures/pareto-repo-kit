@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repo-kit — the repo-tooling installer. ONE entry point, six jobs:
+"""repo-kit — the repo-tooling installer. ONE entry point, twelve jobs:
 
     repo-kit init  [--tooling PATH] [REPO]
         Scaffold a repo from the tooling templates: PLAN.md,
@@ -16,15 +16,46 @@
         the tooling checkout at push time, so new checks added to the
         toolkit apply as soon as the tooling checkout is updated.
 
+    repo-kit uninstall [--tooling PATH] [REPO]
+        Remove what `repo-kit init` installed in THIS repo: the hook
+        (only when it is verifiably ours), the .gitignore block, the
+        override state, the per-repo disable list, and any seeded
+        workflow file still byte-identical to its template — and
+        report, by name, everything it deliberately leaves (a foreign
+        hook, edited files). A gating tool that cannot be cleanly
+        removed will be removed badly, so removal is a first-class
+        command.
+
+    repo-kit checks [--tooling PATH] [--off NAME] [--on NAME] [REPO]
+        Show or change this repo's disabled-check list (git config
+        repokit.disabled-checks). The personal-mode escape hatch: a
+        check that cannot run in someone's environment can be
+        switched off for THIS repo instead of locking them out of
+        pushing. An agent-mode (enforced) tooling checkout ignores
+        the list at push time, and says so.
+
+    repo-kit env [--tooling PATH] [--hooks-root DIR]
+        Environment report: the tooling checkout's mode (personal
+        or agent) and whether each external tool the checks call is
+        installed, with its version — a missing tool is reported as
+        the coverage gap it is. Designed to be callable from a dev
+        container's entrypoint: fast and idempotent. With
+        --hooks-root, also install/refresh hooks in every git repo
+        under that directory.
+
     repo-kit setup [--tooling PATH] [--force] [answer flags]
-        Guided questionnaire that builds your private patterns.txt in
-        the tooling checkout root (see "Your pattern list" in the
-        tooling README). Interactive prompts with detected defaults
-        (your OS username, home paths); every prompt has a matching
-        flag (--email, --domain, --handle, --name, --age-key,
-        --no-paths, --no-gmail, --no-tailnet) so the same setup is
-        scriptable and testable. Refuses to overwrite an existing
-        patterns.txt without --force.
+        Guided questionnaire that builds your private
+        patterns-relaxed.txt in the tooling checkout root (see "Your
+        pattern list" in the tooling README). Interactive prompts with
+        detected defaults (your OS username, home paths); every prompt
+        has a matching flag (--email, --domain, --handle, --name,
+        --age-key, --no-paths, --no-gmail, --no-tailnet) so the same
+        setup is scriptable and testable. Refuses to overwrite an
+        existing patterns-relaxed.txt without --force. Local checks
+        add an optional patterns-strict.txt in the same place on top
+        of it (a stricter, hand-kept list that never leaves your
+        machine); CI only ever receives the relaxed list, as the
+        GATE_PATTERNS secret.
 
     repo-kit provision OWNER/REPO [--variant A|B] [--dry-run]
         Apply the GitHub setup standard to a public repo through the
@@ -39,9 +70,82 @@
         solo repo, required approvals 0; variant B: an agent or outside
         developer holds a write token — 1 approval + Code Owner review,
         with --bypass-user-id putting the owner on the bypass list in
-        pull-request mode). Idempotent: an existing ruleset of the same
-        name is updated in place, never duplicated. --dry-run prints
-        every command and payload and executes nothing.
+        pull-request mode), and the GATE_PATTERNS repository secret,
+        set from the tooling checkout's patterns-relaxed.txt via
+        `gh secret set` (the strict list, if any, is never uploaded;
+        --skip-secret opts out). When no patterns-relaxed.txt exists,
+        provision offers to run `repo-kit setup` first. Finally, when
+        the repo contains a dashboard caller workflow (dashboard.yml
+        or self-dashboard.yml — i.e. `repo-kit init` seeded one, or
+        the tooling repo itself), Pages is created or switched to be
+        sourced from GitHub Actions via the Pages API (--skip-pages
+        opts out); repos without a dashboard workflow skip that step
+        with a note. Idempotent: an existing ruleset of the same name
+        is updated in place, never duplicated. --dry-run prints every
+        command and payload and executes nothing.
+
+    repo-kit override [REPO] [--minutes N]
+        Owner-only escape hatch for pattern-check false positives.
+        Interactive ONLY: it refuses non-interactive shells — a
+        deliberate speed bump that keeps agents and scripts from
+        granting one in the normal course of things (friction plus an
+        explicit human confirmation, not a security boundary: anything
+        running as the owner with write access to .git could forge or
+        bypass local checks entirely; the hard gate is CI). Shows the
+        exact matches the check found — pattern text and matched
+        lines, which the check's own output never prints — and, on
+        the owner typing "override", writes a one-push allowance into
+        the repo's .git directory, bound to the exact commit set
+        scanned and approved (and its tip) and scoped to the
+        specific patterns approved, expiring after N minutes
+        (default 10, allowed 1–60). The check consumes it when the
+        pattern tier applies it and prints that it did; any other
+        commit set does not apply it.
+
+    repo-kit allow-oversize [--file PATH] [--instance NAME]
+                     [--minutes N] [--ceiling-mb N]
+        Supervisor-side: grant the pattern service's one-shot
+        oversize allowance (one scan up to N MiB, default 32,
+        within N minutes, default 10) by writing the allowance
+        record the service honours. Run it on the host when a
+        legitimate push exceeds the service's 1 MiB scan cap.
+
+    repo-kit enforce [on|off] [--profile full|security] [--url URL]
+                     [--yes]
+        Turn AGENT mode on or off for the tooling checkout (no
+        argument: report the current mode). Agent mode is the mode
+        for a containerized agent with its own identity: the gate
+        stops believing the shell and reads its configuration only
+        from supervisor-written files (hooks/enforced.marker is the
+        switch; hooks/enforced.env carries the profile and the
+        pattern-service coordinates). The service token is never
+        taken from the command line (argv leaks into ps output and
+        shell history): with --url it comes from
+        $REPOKIT_ENFORCE_TOKEN, a hidden prompt, or stdin.
+        Turning agent mode on for the checkout repo-kit itself
+        lives in — your own, on a personal machine — needs --yes:
+        your pushes from it would become agent-mode pushes. The
+        intended pattern is a separate checkout for the container
+        mount. Supervisors run this when building the agent's
+        environment; personal installs leave it off. See "Two
+        modes" in the README.
+
+    repo-kit pattern-service [--port N] [--host ADDR]
+        Run the host-side pattern service (tools/pattern_service.py)
+        in the foreground: it loads the tooling checkout's pattern
+        lists and answers scan requests from agent/container
+        checkouts whose environment carries the three variables it
+        prints at startup (REPOKIT_PATTERNS_URL, REPOKIT_PATTERNS_TOKEN,
+        REPOKIT_CHECK_PROFILE=security). The lists never leave this
+        machine; clients send commit text out and get tier names
+        back. A token is generated per run unless
+        REPOKIT_PATTERNS_TOKEN is already set. Default bind is
+        loopback; for container clients, work down the bind ladder
+        in the service's docstring (EXPOSURE) before 0.0.0.0.
+        Ctrl-C stops it.
+        Supervisors with their own lifecycle (devbox's dev-agent)
+        may instead run tools/pattern_service.py directly with the
+        REPOKIT_PATTERN_* environment it documents.
 
     repo-kit packet [packet options]
         Build a review packet (tools/review_packet.py): one
@@ -54,15 +158,18 @@
         --history lists them, --rollback N rewinds the memory N packets
         (for a packet generated but never sent), --reset clears it,
         --base REF starts one packet at a custom ref. Every packet is
-        pattern-scanned after generation (warnings only). All packet
+        pattern-scanned before it is written, copied or recorded,
+        and refused on a match (v0.4.8 fix pass, secondary review
+        item 12). All packet
         options pass through: `repo-kit packet --help` shows them.
 
---tooling names a local tooling checkout in v0.1; fetching templates
-from a git URL (sparse checkout of templates/ + install/ + hooks/) is
-the planned distribution once the tooling repo is published.
+--tooling names a local tooling checkout; templates come from the
+local tooling checkout (templates/ + install/ + hooks/).
 """
 
 import argparse
+import base64
+import datetime
 import getpass
 import json
 import os
@@ -71,6 +178,26 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+
+# The gate's shared plumbing lives in tools/gate_common.py — this
+# CLI's own installation copy (v0.4.8 consolidation: pattern
+# loading, tier derivation, discovery and the EMPTY_TREE constant
+# have exactly one implementation).
+# Guarded import (v0.4.8 fix pass, secondary review item 14): a
+# missing or broken gate_common must not kill EVERY command —
+# the recovery commands (enforce, uninstall, checks) do not use
+# it at all and must survive a damaged tooling checkout. Only
+# the pattern helpers below genuinely need it, and they fail
+# with a clear error naming the module (see _require_gate_common).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.realpath(__file__))), "tools"))
+try:
+    import gate_common  # noqa: E402
+    _GATE_COMMON_IMPORT_ERROR = None
+except Exception as _gc_exc:  # noqa: BLE001 — any import failure
+    gate_common = None
+    _GATE_COMMON_IMPORT_ERROR = _gc_exc
 
 CONTENT_FILES = ["PLAN.md", "project.public.yaml", "CONTRIBUTING.md"]
 ADR_FILES = ["adr/ADR-FORMAT.md", "adr/ADR-000-template.json"]
@@ -80,7 +207,11 @@ BLOCK_END = "# <<< repo-tooling"
 
 
 def say(msg):
-    print(f"repo-kit: {msg}")
+    # flush: the pattern-service launcher prints the client env
+    # block and then runs a foreground child — under a pipe or a
+    # captured log the block must not sit in a buffer the child
+    # outlives (or a kill loses).
+    print(f"repo-kit: {msg}", flush=True)
 
 
 def copy_if_absent(src, dst, label):
@@ -100,6 +231,18 @@ def merge_gitignore(tooling, repo):
     existing = ""
     if os.path.exists(path):
         existing = open(path, encoding="utf-8").read()
+    if BLOCK_BEGIN in existing and BLOCK_END not in existing:
+        # A dangling begin marker (an interrupted edit or a
+        # hand-trimmed block): remove ONLY the marker line and
+        # keep every other line the user wrote, then fall through
+        # to append a fresh block (v0.4.8, pass 4 — the old code
+        # appended a second block, and the NEXT run partitioned
+        # across the whole span between the dangling begin and
+        # the appended end, silently dropping the user content
+        # in between).
+        existing = "\n".join(
+            ln for ln in existing.split("\n")
+            if not ln.startswith(BLOCK_BEGIN))
     if BLOCK_BEGIN in existing and BLOCK_END in existing:
         head, _, rest = existing.partition(BLOCK_BEGIN)
         _, _, tail = rest.partition(BLOCK_END)
@@ -121,8 +264,13 @@ def merge_gitignore(tooling, repo):
 
 
 def install_hooks(tooling, repo):
+    # --git-common-dir, not --git-dir (v0.4.8, pass 4): in a
+    # linked worktree or a submodule, --git-dir names the
+    # worktree's private git dir, whose hooks/ git never reads —
+    # the hook landed where it could never run. The common dir
+    # is the main .git for every worktree of the repo.
     git_dir = subprocess.run(
-        ["git", "-C", repo, "rev-parse", "--git-dir"],
+        ["git", "-C", repo, "rev-parse", "--git-common-dir"],
         capture_output=True, text=True)
     if git_dir.returncode != 0:
         say("not a git repo — run `git init` first; hooks skipped")
@@ -132,7 +280,15 @@ def install_hooks(tooling, repo):
     dst = os.path.join(hooks_dir, "pre-push")
     src_text = open(os.path.join(tooling, "hooks", "pre-push"),
                     encoding="utf-8").read()
-    baked = src_text.replace("__TOOLING_HOME__", os.path.abspath(tooling))
+    # The baked path lands inside a double-quoted shell string
+    # in the dispatcher (TOOLING_HOME="..."): escape the four
+    # characters that stay special there, so a checkout path
+    # containing a quote, a $ or a backtick cannot break out of
+    # the assignment (v0.4.8, pass 4).
+    baked_path = os.path.abspath(tooling)
+    for ch in ("\\", '"', "$", "`"):
+        baked_path = baked_path.replace(ch, "\\" + ch)
+    baked = src_text.replace("__TOOLING_HOME__", baked_path)
     if os.path.exists(dst):
         current = open(dst, encoding="utf-8").read()
         if "repo-tooling pre-push dispatcher" not in current:
@@ -149,27 +305,133 @@ def install_hooks(tooling, repo):
 
 
 def _ask(prompt):
+    """One interactive answer, or None when the input ENDED
+    (EOF — a closed stdin, Ctrl-D). None is distinct from an
+    empty answer (v0.4.8, pass 4): a caller collecting answers
+    that shape a file must be able to tell "the user skipped
+    this" from "there is no user" — the old code returned ""
+    for both, and setup's broad defaults read "" as yes."""
     try:
         return input(prompt).strip()
     except EOFError:
-        return ""
+        return None
 
 
 def _ask_list(prompt):
     raw = _ask(prompt)
+    if raw is None:
+        return None
     return [v.strip() for v in raw.split(",") if v.strip()]
 
 
+def _count_patterns(path):
+    return sum(1 for ln in open(path, encoding="utf-8")
+               if ln.strip() and not ln.strip().startswith("#"))
+
+
+def _tier_for_path_fallback(path):
+    """Local implementation of gate_common.tier_for_path — the
+    same rule (v0.4.8 fix pass, secondary review item 14), used
+    only when gate_common could not be imported, so the alias
+    below never needs the module at import time."""
+    base = os.path.basename(path or "")
+    if base == "patterns-relaxed.txt":
+        return "relaxed"
+    if base == "patterns-strict.txt":
+        return "strict"
+    return os.path.splitext(base)[0] or "patterns"
+
+
+if gate_common is not None:
+    EMPTY_TREE = gate_common.EMPTY_TREE
+    _tier_for_path = gate_common.tier_for_path
+else:
+    # Fallbacks (v0.4.8 fix pass, secondary review item 14):
+    # the literal SHA-1 empty-tree id, and the local tier rule
+    # above — recovery commands that only need these constants
+    # keep working with gate_common=None.
+    EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    _tier_for_path = _tier_for_path_fallback
+
+
+def _require_gate_common():
+    """Return gate_common, or fail clearly (v0.4.8 fix pass,
+    secondary review item 14). The pattern helpers genuinely
+    need gate_common's loader/discovery; when it is missing or
+    broken they must name the missing module instead of dying
+    with a traceback. Commands that reach these helpers today
+    are cmd_env and cmd_override; the recovery commands
+    (cmd_enforce, cmd_uninstall, cmd_checks) never reach them
+    and run with gate_common=None."""
+    if gate_common is None:
+        say("tools/gate_common.py is missing or could not be "
+            "imported, so this command cannot load or discover "
+            "pattern lists"
+            + (f" ({_GATE_COMMON_IMPORT_ERROR})"
+               if _GATE_COMMON_IMPORT_ERROR else "")
+            + ". Restore gate_common.py in the tooling "
+            "checkout's tools/ directory and re-run. Recovery "
+            "commands that do not need it (enforce, uninstall, "
+            "checks) still work.")
+        raise SystemExit(2)
+    return gate_common
+
+
+def _sanitize(text):
+    """Make a line safe to print on the owner's terminal: escape
+    every non-printable / non-ASCII character (ANSI escapes, control
+    characters) so a crafted commit cannot hide or fake matches."""
+    return "".join(ch if 32 <= ord(ch) < 127 else
+                   f"\\x{ord(ch):02x}" if ord(ch) < 256 else
+                   f"\\u{ord(ch):04x}" for ch in text)
+
+
+def _pattern_files(tooling):
+    """The pattern files in force for LOCAL checks — the one
+    discovery rule (gate_common's): $GATE_PATTERNS_FILE when set
+    (os.pathsep-joined), else the tooling root's
+    patterns-strict.txt and patterns-relaxed.txt."""
+    return _require_gate_common().discover_pattern_files(
+        tooling, os.environ.get("GATE_PATTERNS_FILE"))
+
+
+def _load_pattern_files(paths):
+    """Union of the pattern strings across files, in order,
+    deduplicated (a pattern in both lists counts once) —
+    gate_common's loader without compilation (this CLI only
+    counts and displays patterns; the gate compiles)."""
+    pats, _errors = _require_gate_common().load_patterns(
+        paths, compile=False)
+    return [p["raw"] for p in pats]
+
+
+def _load_patterns_tagged(paths):
+    """Like _load_pattern_files, but each entry keeps its tier,
+    its 1-based number among the pattern lines of its own file,
+    and its source path — the same (tier, number) the gate
+    reports, from gate_common's one loader."""
+    pats, _errors = _require_gate_common().load_patterns(
+        paths, compile=False)
+    return pats
+
+
 def cmd_setup(tooling, args):
-    out = os.path.join(tooling, "patterns.txt")
+    out = os.path.join(tooling, "patterns-relaxed.txt")
     if os.path.exists(out) and not args.force:
-        say("patterns.txt already exists in the tooling checkout — "
-            "refusing to overwrite it. Edit it directly, or re-run "
-            "with --force to replace it.")
+        say("patterns-relaxed.txt already exists in the tooling "
+            "checkout — refusing to overwrite it. Edit it directly, "
+            "or re-run with --force to replace it.")
         return 1
     user = getpass.getuser()
+    # ANY answer given as a flag — including the --no-* flags —
+    # makes the run non-interactive (v0.4.8, pass 4: the --no-*
+    # flags were excluded from this test, so `repo-kit setup
+    # --no-gmail` alone dropped into the interview, which then
+    # overwrote the flag's answer with whatever the interview
+    # produced).
     interactive = not any([args.email, args.domain, args.handle,
-                           args.name, args.age_key])
+                           args.name, args.age_key, args.no_gmail,
+                           args.no_tailnet, args.no_paths])
     emails, domains, handles, names = (
         list(args.email), list(args.domain), list(args.handle),
         list(args.name))
@@ -179,38 +441,64 @@ def cmd_setup(tooling, args):
     if interactive:
         print("repo-kit setup — your private pattern list.")
         print("Answer what applies; press Enter to skip a question. "
-              "Values become patterns in patterns.txt (tooling root, "
-              "git-ignored). Nothing is uploaded anywhere.\n")
-        emails = _ask_list("Your email addresses (comma-separated): ")
-        domains = _ask_list(
-            "Domains you own, to block any address at them "
-            "(comma-separated): ")
-        want_gmail = _ask(
-            "Also block ANY @gmail.com address in your repos? [Y/n] "
-            ).lower() not in ("n", "no")
-        handles = _ask_list(
-            "Your usernames/handles on other services "
-            "(comma-separated): ")
-        names = _ask_list(
-            "Names unique to your setup — cloud project IDs, drive or "
-            "server names (comma-separated): ")
-        want_paths = _ask(
-            f"Block your home paths (/Users/{user}/ and "
-            f"/home/{user}/)? [Y/n] ").lower() not in ("n", "no")
-        want_tailnet = _ask(
-            "Block Tailscale tailnet names (*.ts.net)? [Y/n] "
-            ).lower() not in ("n", "no")
-        age_key = _ask(
-            "A sops age PUBLIC key (age1…), if you use one — it is an "
-            "identifier uniquely yours (Enter to skip): ") or None
+              "Values become patterns in patterns-relaxed.txt "
+              "(tooling root, git-ignored). Nothing is uploaded "
+              "anywhere.\n")
+        answers = [
+            _ask_list("Your email addresses (comma-separated): "),
+            _ask_list(
+                "Domains you own, to block any address at them "
+                "(comma-separated): "),
+            _ask("Also block ANY @gmail.com address in your "
+                 "repos? [Y/n] "),
+            _ask_list(
+                "Your usernames/handles on other services "
+                "(comma-separated): "),
+            _ask_list(
+                "Names unique to your setup — cloud project IDs, "
+                "drive or server names (comma-separated): "),
+            _ask(f"Block your home paths (/Users/{user}/ and "
+                 f"/home/{user}/)? [Y/n] "),
+            _ask("Block Tailscale tailnet names? [Y/n] "),
+            _ask("A sops age PUBLIC key (age1…), if you use "
+                 "one — it is an identifier uniquely yours "
+                 "(Enter to skip): "),
+        ]
+        if any(a is None for a in answers):
+            # The input ended mid-interview (v0.4.8, pass 4):
+            # the old code read EOF as "" and "" as YES for the
+            # three broad questions, so a run with stdin closed
+            # wrote a list blocking any @gmail.com address, all
+            # tailnet names and the user's home paths with no
+            # human having answered anything. Abort instead —
+            # nothing is written.
+            say("setup aborted — the input ended before every "
+                "question was answered, so no answers were "
+                "recorded and NOTHING was written. Run setup in "
+                "a terminal, or pass the answers as flags "
+                "(--email/--domain/--handle/--name/--age-key, "
+                "--no-gmail/--no-tailnet/--no-paths).")
+            return 2
+        (emails, domains, gmail_a, handles, names, paths_a,
+         tailnet_a, age_a) = answers
+        want_gmail = gmail_a.lower() not in ("n", "no")
+        want_paths = paths_a.lower() not in ("n", "no")
+        want_tailnet = tailnet_a.lower() not in ("n", "no")
+        age_key = age_a or None
 
-    lines = ["# patterns.txt — MY private pattern list.",
+    lines = ["# patterns-relaxed.txt — MY private pattern list.",
              "# Built by `repo-kit setup`. Edit freely: one regex per "
              "line,",
              "# # starts a comment, matching is case-insensitive.",
              "# NEVER commit this file anywhere (the tooling repo's",
-             "# .gitignore covers it here). For CI, paste its contents",
-             "# into the GATE_PATTERNS repository secret.", ""]
+             "# .gitignore covers it here). For CI, `repo-kit "
+             "provision`",
+             "# uploads its contents as the GATE_PATTERNS repository",
+             "# secret. An optional patterns-strict.txt beside it (a",
+             "# stricter list you keep by hand) ADDS its patterns to",
+             "# this file's for LOCAL checks only — never instead of",
+             "# them, so the two files cannot drift apart — and is",
+             "# never uploaded anywhere.", ""]
     pats = []
 
     def add(section, values):
@@ -249,8 +537,15 @@ def cmd_setup(tooling, args):
         for b in bad:
             print(f"  {b}")
         return 1
-    with open(out, "w", encoding="utf-8") as fh:
+    # The list is the user's most identifying file — written
+    # 0600 like enforced.env (v0.4.8, pass 4: this was a plain
+    # open(), leaving the umask's default, usually world-readable).
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
+    os.chmod(out, 0o600)  # a pre-existing file keeps its old mode
+    # under O_TRUNC alone; pin it explicitly
     # Standard closing summary for every guided setup (pattern agreed
     # 2026-11-12): say what was written, WHERE it lives, that it can be
     # edited by hand anytime, and the one next step if there is one.
@@ -269,9 +564,16 @@ def cmd_setup(tooling, args):
     print("  Keep it private: it stays out of git (the tooling repo's "
           ".gitignore")
     print("  covers it) — never copy it into a project repo.")
-    print("  Next step: in each project repo, add a secret named "
-          "GATE_PATTERNS")
-    print("  with this file's contents, so CI enforces the same list.")
+    print("  Stricter local list (optional): create patterns-strict.txt")
+    print("  beside it in the tooling root — same format — and local")
+    print("  checks ADD its patterns to this file's (never instead of")
+    print("  them, so the two can't drift). It never leaves this")
+    print("  machine: CI only ever receives the relaxed list.")
+    print("  Next step: run `repo-kit provision OWNER/REPO` for each "
+          "project")
+    print("  repo — it sets the GATE_PATTERNS secret from this file, "
+          "so CI")
+    print("  enforces the same list.")
     print("=" * 64)
     return 0
 
@@ -295,11 +597,20 @@ def cmd_env(tooling, args):
     problem must never stop the user's shell from starting.
     """
     print("repo-kit env — tooling status")
+    if os.path.exists(os.path.join(tooling, "hooks",
+                                   "enforced.marker")):
+        print("  mode: AGENT (hooks/enforced.marker present — "
+              "the gate reads hooks/enforced.env and ignores "
+              "the shell for gate-critical settings)")
+    else:
+        print("  mode: personal (no agent-mode marker)")
     for name, cmd, role in ENV_TOOLS:
         path = shutil.which(cmd[0])
         if not path:
-            print(f"  MISSING  {name} ({role}) — checks that need it "
-                  "skip loudly")
+            print(f"  MISSING  {name} ({role}) — a coverage gap: "
+                  "the push asks on the terminal and fails closed "
+                  "without one (v0.4.8 fix pass, secondary review "
+                  "item 12)")
             continue
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
@@ -309,13 +620,14 @@ def cmd_env(tooling, args):
         except Exception as exc:  # noqa: BLE001 — report, never crash env
             ver = f"present but errored: {exc}"
         print(f"  ok       {name}: {ver}")
-    pats = os.path.join(tooling, "patterns.txt")
-    if os.path.exists(pats):
-        n = sum(1 for ln in open(pats, encoding="utf-8")
-                if ln.strip() and not ln.startswith("#"))
-        print(f"  patterns.txt: present ({n} patterns)")
+    files = _pattern_files(tooling)
+    if files:
+        names = " + ".join(os.path.basename(f) for f in files)
+        print(f"  pattern lists: {names} "
+              f"({len(_load_pattern_files(files))} patterns unioned "
+              "for local checks)")
     else:
-        print("  patterns.txt: ABSENT — run `repo-kit setup`")
+        print("  pattern list: ABSENT — run `repo-kit setup`")
     if args.hooks_root:
         root = os.path.abspath(args.hooks_root)
         found = []
@@ -346,6 +658,26 @@ def _gh_api(method, path, payload=None):
     proc = subprocess.run(cmd, input=data, capture_output=True,
                           text=True)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _gh_status(method, path):
+    """The HTTP status of one `gh api` call, parsed from gh's own
+    --include header block — structured, instead of substring-
+    matching stderr for "404" (v0.4.2, reviewer round 2 low item:
+    gh's error wording is not an API and can change or collide).
+    Returns None when no status could be read at all (gh missing,
+    network down) — callers must treat that as an ERROR, never as
+    "the thing is absent"."""
+    proc = subprocess.run(
+        ["gh", "api", "--include", "--method", method, path],
+        capture_output=True, text=True)
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("HTTP/"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+            return None
+    return None
 
 
 def _provision_steps(args, owner, repo):
@@ -408,6 +740,16 @@ def _load_ruleset(tooling, args):
             if rule["type"] == "required_status_checks":
                 rule["parameters"]["required_status_checks"] = checks
     if args.bypass_user_id:
+        if (args.variant or "").upper() != "B":
+            # Variant A deliberately ships NO bypass actor (the
+            # README's position: the maintainer reviews even his
+            # own changes there). Applying the flag to A anyway
+            # silently converted A into A-with-bypass (v0.4.8,
+            # pass 5) — refuse instead.
+            raise ValueError(
+                "--bypass-user-id applies to variant B only: "
+                "variant A deliberately has no bypass actor. "
+                "Re-run with --variant B, or drop the flag.")
         # Variant B per the standard: the owner bypasses in
         # pull-request mode only, so he can merge his own work while
         # the approval rule binds everyone else.
@@ -417,6 +759,33 @@ def _load_ruleset(tooling, args):
             "bypass_mode": "pull_request",
         }]
     return ruleset
+
+
+def _ensure_relaxed_patterns(tooling):
+    """Path to patterns-relaxed.txt, offering setup first if absent.
+
+    The GATE_PATTERNS secret is always sourced from the relaxed list
+    — patterns-strict.txt, when present, is local-only by design and
+    is never uploaded. Returns the path, or None when there is still
+    no list (the offer was declined, or setup produced nothing). A
+    non-interactive run never blocks on the prompt.
+    """
+    relaxed = os.path.join(tooling, "patterns-relaxed.txt")
+    if os.path.exists(relaxed):
+        return relaxed
+    say("no patterns-relaxed.txt in the tooling checkout — CI needs "
+        "it as the GATE_PATTERNS secret")
+    if not sys.stdin.isatty():
+        return None
+    if (_ask("  run `repo-kit setup` now to create it? [y/N] "
+             ) or "").lower() not in ("y", "yes"):
+        return None
+    setup_args = argparse.Namespace(
+        force=False, email=[], domain=[], handle=[], name=[],
+        age_key=None, no_gmail=False, no_tailnet=False, no_paths=False)
+    if cmd_setup(tooling, setup_args) != 0:
+        return None
+    return relaxed if os.path.exists(relaxed) else None
 
 
 def _infer_target():
@@ -446,7 +815,11 @@ def cmd_provision(tooling, args):
     owner, repo = m.groups()
     base = f"repos/{owner}/{repo}"
     steps = _provision_steps(args, owner, repo)
-    ruleset = _load_ruleset(tooling, args)
+    try:
+        ruleset = _load_ruleset(tooling, args)
+    except ValueError as exc:
+        say(str(exc))
+        return 2
 
     def show(method, path, payload):
         cmd = ["gh", "api", "--method", method, path]
@@ -483,6 +856,39 @@ def cmd_provision(tooling, args):
                   "mode, so you can merge your own PRs while the "
                   "approval rule binds token holders. Pass "
                   "--bypass-user-id to pin a specific id instead.")
+        print("\n# GATE_PATTERNS repository secret")
+        if args.skip_secret:
+            print("  skipped (--skip-secret)")
+        else:
+            relaxed = os.path.join(tooling, "patterns-relaxed.txt")
+            if os.path.exists(relaxed):
+                print(f"  $ gh secret set GATE_PATTERNS --repo "
+                      f"{owner}/{repo} < patterns-relaxed.txt "
+                      f"({_count_patterns(relaxed)} patterns from the "
+                      "tooling checkout — patterns-strict.txt, if "
+                      "any, is never uploaded)")
+            else:
+                print("  no patterns-relaxed.txt in the tooling "
+                      "checkout: at run time you are offered "
+                      "`repo-kit setup` first; without a list the "
+                      "secret is left unset and reported as "
+                      "outstanding")
+        print("\n# GitHub Pages source (dashboard)")
+        if args.skip_pages:
+            print("  skipped (--skip-pages)")
+        else:
+            print("  if the repo contains .github/workflows/"
+                  "dashboard.yml or self-dashboard.yml (checked at "
+                  "run time):")
+            print(f"  $ gh api --method GET {base}/pages")
+            print("  … if Pages is absent:  POST   " + base +
+                  "/pages")
+            print("  … if present with another source:  PUT    " +
+                  base + "/pages")
+            print('      with payload {"build_type": "workflow"} '
+                  "(source: GitHub Actions)")
+            print("  repos without a dashboard workflow skip this "
+                  "step with a note")
         print("\nDry run only — no commands were executed.")
         return 0
 
@@ -508,37 +914,529 @@ def cmd_provision(tooling, args):
         ruleset = _load_ruleset(tooling, args)
         say(f"variant B: bypass actor = you (GitHub user id {uid}, "
             "resolved from the authenticated gh user)")
+    # Provision COLLECTS step failures and attempts every step
+    # (v0.4.8, pass 5: a failed settings step used to abort the
+    # run before the ruleset, secret and Pages steps were even
+    # attempted, contradicting PLAN ns-7's description; the tail
+    # reports every failure together and the exit code follows).
+    failed_steps = []
     for label, method, path, payload in steps:
         rc, out, err = _gh_api(method, path, payload)
         if rc != 0:
             say(f"FAILED at '{label}': {(err or out).strip()}")
-            return 1
+            failed_steps.append(label)
+            continue
         say(f"ok — {label}")
-    rc, out, err = _gh_api("GET", f"{base}/rulesets?per_page=100")
-    if rc != 0:
-        say(f"FAILED listing existing rulesets: {(err or out).strip()}")
-        return 1
-    try:
-        existing = [r for r in json.loads(out or "[]")
+    # The ruleset lookup paginates (v0.4.8, pass 5: a single
+    # per_page=100 page silently missed the existing ruleset on
+    # a repo with more rulesets than that, and provision then
+    # created a duplicate).
+    all_rulesets = []
+    ruleset_list_ok = True
+    page = 1
+    while True:
+        rc, out, err = _gh_api(
+            "GET", f"{base}/rulesets?per_page=100&page={page}")
+        if rc != 0:
+            say("FAILED listing existing rulesets: "
+                f"{(err or out).strip()}")
+            failed_steps.append("rulesets (list)")
+            ruleset_list_ok = False
+            break
+        try:
+            batch = json.loads(out or "[]")
+        except ValueError:
+            say("could not parse the ruleset list GitHub returned "
+                "— not risking a duplicate ruleset")
+            failed_steps.append("rulesets (list)")
+            ruleset_list_ok = False
+            break
+        if not isinstance(batch, list):
+            say("could not parse the ruleset list GitHub returned "
+                "— not risking a duplicate ruleset")
+            failed_steps.append("rulesets (list)")
+            ruleset_list_ok = False
+            break
+        all_rulesets.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    if ruleset_list_ok:
+        existing = [r for r in all_rulesets
                     if r.get("name") == RULESET_NAME]
-    except ValueError:
-        say("could not parse the ruleset list GitHub returned — "
-            "stopping rather than risk a duplicate ruleset")
-        return 1
-    if existing:
-        rid = existing[0]["id"]
-        rc, out, err = _gh_api("PUT", f"{base}/rulesets/{rid}", ruleset)
-        action = f"updated in place (id {rid}) — no duplicate created"
+        if existing:
+            rid = existing[0]["id"]
+            rc, out, err = _gh_api("PUT", f"{base}/rulesets/{rid}",
+                                   ruleset)
+            action = (f"updated in place (id {rid}) — no "
+                      "duplicate created")
+        else:
+            rc, out, err = _gh_api("POST", f"{base}/rulesets",
+                                   ruleset)
+            action = "created"
+        if rc != 0:
+            say("FAILED applying the ruleset: "
+                f"{(err or out).strip()}")
+            failed_steps.append("ruleset")
+        else:
+            say(f"ok — ruleset '{RULESET_NAME}' (variant "
+                f"{args.variant}) {action}")
+    secret_outstanding = None
+    if args.skip_secret:
+        secret_outstanding = "skipped (--skip-secret)"
     else:
-        rc, out, err = _gh_api("POST", f"{base}/rulesets", ruleset)
-        action = "created"
-    if rc != 0:
-        say(f"FAILED applying the ruleset: {(err or out).strip()}")
+        relaxed = _ensure_relaxed_patterns(tooling)
+        if relaxed is None:
+            # A missing secret is a FAILED step (v0.4.8, pass 5):
+            # it used to be recorded as merely "outstanding"
+            # while the run printed the success banner and
+            # exited 0 — provision had applied a standard whose
+            # central secret was absent and called it a match.
+            # Only an explicit --skip-secret is outstanding-yet-
+            # successful.
+            secret_outstanding = (
+                "NOT set — no patterns-relaxed.txt. Run "
+                "`repo-kit setup`, then re-run provision; or by "
+                "hand: gh secret set GATE_PATTERNS --repo "
+                f"{owner}/{repo} < patterns-relaxed.txt")
+            failed_steps.append("GATE_PATTERNS secret")
+        elif _count_patterns(relaxed) == 0:
+            secret_outstanding = (
+                "NOT set — patterns-relaxed.txt exists but "
+                "contains no patterns (empty or comments only), so "
+                "there is nothing to upload. Add patterns, or "
+                "re-run `repo-kit setup --force`, then re-run "
+                "provision.")
+            say("FAILED — GATE_PATTERNS secret not set: "
+                "patterns-relaxed.txt contains no patterns")
+            failed_steps.append("GATE_PATTERNS secret")
+        else:
+            with open(relaxed, encoding="utf-8") as fh:
+                value = fh.read()
+            proc = subprocess.run(
+                ["gh", "secret", "set", "GATE_PATTERNS",
+                 "--repo", f"{owner}/{repo}"],
+                input=value, capture_output=True, text=True)
+            if proc.returncode != 0:
+                msg = (proc.stderr or proc.stdout).strip()
+                say("FAILED setting the GATE_PATTERNS secret: "
+                    + msg)
+                secret_outstanding = f"FAILED to set ({msg})"
+                failed_steps.append("GATE_PATTERNS secret")
+            else:
+                say("ok — GATE_PATTERNS secret set from "
+                    "patterns-relaxed.txt "
+                    f"({_count_patterns(relaxed)} patterns; the "
+                    "strict list is never uploaded)")
+                # Dependabot reads a SEPARATE secret store: set
+                # the same value there, or every Dependabot PR
+                # lands in the gate's cannot-run path (v0.4.3,
+                # reviewer round 3 item 6a).
+                proc = subprocess.run(
+                    ["gh", "secret", "set", "GATE_PATTERNS",
+                     "--app", "dependabot",
+                     "--repo", f"{owner}/{repo}"],
+                    input=value, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    msg = (proc.stderr or proc.stdout).strip()
+                    say("FAILED setting the Dependabot "
+                        "GATE_PATTERNS secret: " + msg)
+                    secret_outstanding = \
+                        f"FAILED to set for Dependabot ({msg})"
+                    failed_steps.append(
+                        "GATE_PATTERNS secret (Dependabot)")
+                else:
+                    say("ok — GATE_PATTERNS also set for "
+                        "Dependabot (its PRs read a separate "
+                        "secret store)")
+    if args.variant == "B":
+        # Variant B's ruleset requires Code Owner review, which is
+        # inert without a CODEOWNERS file in the repo (v0.4.8,
+        # pass 6 major 5). `repo-kit init` seeds one; a repo that
+        # predates that — or deleted it — must hear about it here,
+        # as a failed step, not discover it never had the review
+        # it believed it had.
+        # Fetch the file's CONTENTS, not just its existence
+        # (v0.4.8 fix pass, secondary review item 3): an HTTP
+        # 200 over a file whose only rule is commented out —
+        # init's seeded placeholder — binds nothing, so the old
+        # status-only probe reported ok behind an inert rule.
+        # Require at least one uncommented, non-blank rule
+        # line; probe all three locations in order and the
+        # first location with an active rule wins.
+        owners_found = False
+        owners_location = None
+        owners_no_rule = None
+        owners_probe_failed = False
+        for cpath in ("CODEOWNERS", ".github/CODEOWNERS",
+                      "docs/CODEOWNERS"):
+            rc, out, err = _gh_api(
+                "GET", f"{base}/contents/{cpath}")
+            if rc != 0:
+                status = _gh_status(
+                    "GET", f"{base}/contents/{cpath}")
+                if status == 404:
+                    continue
+                owners_probe_failed = True
+                break
+            try:
+                payload = json.loads(out or "{}")
+                encoded = payload["content"]
+                text = base64.b64decode(encoded).decode(
+                    "utf-8", errors="replace")
+            except (ValueError, KeyError, TypeError):
+                owners_probe_failed = True
+                break
+            if any(ln.strip() and not ln.strip().startswith("#")
+                   for ln in text.splitlines()):
+                owners_found = True
+                owners_location = cpath
+                break
+            if owners_no_rule is None:
+                owners_no_rule = cpath
+        if owners_found:
+            say(f"ok — CODEOWNERS at {owners_location} has an "
+                "active owner rule (variant B's Code Owner "
+                "review can bind)")
+        elif owners_probe_failed:
+            say("FAILED probing for a CODEOWNERS file")
+            failed_steps.append("CODEOWNERS (probe)")
+        elif owners_no_rule is not None:
+            say(f"FAILED — a CODEOWNERS file exists at "
+                f"{owners_no_rule} but no active owner rule "
+                "was found in it (every line is blank or "
+                "commented out), so variant B's Code Owner "
+                "review cannot bind. Add or uncomment an owner "
+                "rule, then re-run provision.")
+            failed_steps.append("CODEOWNERS")
+        else:
+            say("FAILED — variant B requires Code Owner review, "
+                "but this repo has no CODEOWNERS file (root, "
+                ".github/ or docs/), so the rule is inert. Run "
+                "`repo-kit init` in a checkout to seed one, or "
+                "add it by hand, then re-run provision.")
+            failed_steps.append("CODEOWNERS")
+    if args.skip_pages:
+        say("ok — Pages step skipped (--skip-pages)")
+    else:
+        has_dash = False
+        probe_failed = None
+        for name in ("dashboard.yml", "self-dashboard.yml"):
+            status = _gh_status(
+                "GET", f"{base}/contents/.github/workflows/{name}")
+            if status == 200:
+                has_dash = True
+                break
+            if status != 404:
+                # Not a plain "file absent": an auth, network or
+                # rate-limit error must not masquerade as "no
+                # dashboard workflow" and silently skip Pages.
+                probe_failed = ("HTTP " + str(status) if status
+                                else "no HTTP status (gh failed?)")
+                break
+        if probe_failed is not None:
+            say("FAILED probing for a dashboard workflow: "
+                f"{probe_failed}")
+            failed_steps.append("Pages (dashboard workflow probe)")
+        elif not has_dash:
+            say("ok — Pages step skipped: no dashboard workflow in "
+                "this repo (nothing to publish)")
+        else:
+            rc, out, err = _gh_api("GET", f"{base}/pages", None)
+            current = None
+            pages_exists = False
+            if rc == 0:
+                pages_exists = True
+                try:
+                    current = json.loads(out or "{}").get(
+                        "build_type")
+                except ValueError:
+                    current = None
+            elif _gh_status("GET", f"{base}/pages") != 404:
+                say("FAILED reading the Pages configuration: "
+                    f"{(err or out).strip()}")
+                failed_steps.append("Pages (read configuration)")
+                pages_exists = None
+            if pages_exists is not None:
+                if current == "workflow":
+                    say("ok — Pages already sourced from GitHub "
+                        "Actions")
+                else:
+                    method = "PUT" if pages_exists else "POST"
+                    rc, out, err = _gh_api(
+                        method, f"{base}/pages",
+                        {"build_type": "workflow"})
+                    if rc != 0:
+                        say("FAILED setting the Pages source to "
+                            f"GitHub Actions: {(err or out).strip()}")
+                        failed_steps.append("Pages (set source)")
+                    else:
+                        say("ok — Pages source set to GitHub "
+                            "Actions (dashboard workflow present)")
+    if failed_steps:
+        say(f"done WITH FAILURES — {owner}/{repo}: failed step(s): "
+            + ", ".join(failed_steps) + ". Re-run provision to "
+            "retry; it is idempotent.")
+    else:
+        say(f"done — {owner}/{repo} matches the GitHub setup "
+            "standard. Re-run anytime to re-apply or audit; it is "
+            "idempotent.")
+    if secret_outstanding:
+        say(f"OUTSTANDING: GATE_PATTERNS secret {secret_outstanding}")
+    return 1 if failed_steps else 0
+
+
+def cmd_override(tooling, args):
+    """Owner-only false-positive override for the pattern check.
+
+    The check's own output never shows what matched (so it can be
+    relayed safely); this command is where the matches are shown —
+    ALL of them, grouped per pattern with counts — and it refuses to
+    run without an interactive terminal. That refusal is a speed
+    bump, not a security boundary: it keeps agents and scripts from
+    granting an override in the normal course of things, but
+    anything running as the owner with write access to .git could
+    forge the allowance or bypass local checks entirely (the hard
+    gate is CI). A granted override is a one-push allowance in the
+    repo's .git directory, bound to the exact COMMIT SET that
+    was scanned and approved (and its tip), scoped to the
+    specific patterns approved, expiring after --minutes; the
+    check consumes it at the moment the pattern tier applies
+    it. Any other commit set — new commits, the same tip on an
+    older base — does not apply it (v0.4.8, secondary review
+    pass 5: up to v0.4.7 only the tip was compared, so unseen
+    commits could ride under an approval). Detection scans
+    exactly as the check does (whole message / ci_checks' chunk
+    builder), so what is shown here is exactly what the check
+    would flag.
+    """
+    if not 1 <= args.minutes <= 60:
+        say("--minutes must be between 1 and 60 (the allowance is "
+            "meant to cover one immediate push, not to linger)")
+        return 2
+    if not sys.stdin.isatty():
+        say("override is owner-only and interactive — it refuses "
+            "non-interactive shells as a speed bump, so agents and "
+            "scripts cannot grant one in the normal course of "
+            "things. Run it yourself in a terminal.")
+        return 2
+    repo = os.path.abspath(args.repo)
+
+    def git(*a):
+        proc = subprocess.run(["git", "-C", repo, *a],
+                              capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    git_dir = git("rev-parse", "--git-dir")
+    if not git_dir:
+        say(f"not a git repo: {repo}")
+        return 2
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(repo, git_dir)
+    files = _pattern_files(tooling)
+    tagged = _load_patterns_tagged(files)
+    if not tagged:
+        say("no pattern list in force — nothing to override. Run "
+            "`repo-kit setup` first.")
         return 1
-    say(f"ok — ruleset '{RULESET_NAME}' (variant {args.variant}) "
-        f"{action}")
-    say(f"done — {owner}/{repo} matches the GitHub setup standard. "
-        "Re-run anytime to re-apply or audit; it is idempotent.")
+    compiled = []
+    for entry in tagged:
+        try:
+            compiled.append((entry, re.compile(entry["raw"],
+                                               re.IGNORECASE)))
+        except re.error:
+            say("warning: pattern does not compile, skipped: "
+                f"{entry['tier']} #{entry['number']}")
+    rng = "origin/main..HEAD" if git(
+        "rev-parse", "--verify", "-q", "origin/main") else "HEAD~1..HEAD"
+    # Root commit: HEAD~1 does not exist — scan against the empty
+    # tree, exactly as ci_checks does, or the first commit could
+    # never be overridden (or checked).
+    scan_rng = rng
+    log_rng = rng
+    if rng == "HEAD~1..HEAD" and not git(
+            "rev-parse", "--verify", "-q", "HEAD~1"):
+        scan_rng = f"{EMPTY_TREE}..HEAD"
+        log_rng = "HEAD"
+    head = git("rev-parse", "HEAD")
+    if rng.startswith("origin/main"):
+        base_sha = git("rev-parse", "--verify", "-q",
+                       "origin/main^{commit}")
+    elif scan_rng.startswith(EMPTY_TREE):
+        base_sha = EMPTY_TREE
+    else:
+        base_sha = git("rev-parse", "--verify", "-q",
+                       "HEAD~1^{commit}")
+    # Per pattern: every location it matches, found by scanning the
+    # whole texts first (the check's semantics) and then deriving
+    # the matching lines for display.
+    per_pattern = []
+    log = git("log", log_rng, "--format=%H%x00%s%x00%b%x1e")
+    commit_texts = []
+    for chunk in log.split("\x1e"):
+        chunk = chunk.strip("\n")
+        if not chunk.strip():
+            continue
+        sha, _, rest = chunk.partition("\x00")
+        subject, _, body = rest.partition("\x00")
+        commit_texts.append((sha.strip()[:12],
+                             subject.strip() + "\n" + body))
+    # Scan EXACTLY what the check scans (v0.4.4, round 4 items
+    # 2/3 + low 2): ci_checks' own chunk builder — per-hunk added
+    # lines, file paths, and binary files' printable runs —
+    # searched chunk by chunk. The old code re-implemented the
+    # extraction here and searched the JOINED added text, so the
+    # two could disagree (a multi-line pattern matching across a
+    # seam here that the check would never flag; paths and binary
+    # content invisible here entirely). One builder, no drift.
+    sys.path.insert(0, os.path.join(tooling, "tools"))
+    import ci_checks as _cc
+    chunks = []
+    scanned_commits = [s.strip() for s in
+                       git("rev-list", scan_rng).splitlines()
+                       if s.strip()]
+    try:
+        for sha_full in scanned_commits:
+            found, _diff, _cap = _cc._commit_chunks(
+                repo, sha_full)
+            chunks.extend(found)
+    except _cc.GitFailure as exc:
+        say(f"could not read the commits to scan: {exc}")
+        return 1
+    for entry, rx in compiled:
+        hits = []
+        for sha, text in commit_texts:
+            if rx.search(text):
+                lines = [ln.strip() for ln in text.splitlines()
+                         if rx.search(ln)]
+                if not lines:
+                    lines = ["(match spans lines of the message)"]
+                for ln in lines:
+                    hits.append((f"commit {sha} message", ln[:120]))
+        for text, cpath, ckind in chunks:
+            if not rx.search(text):
+                continue
+            if ckind == "path":
+                hits.append(("file path", _sanitize(cpath)))
+            elif ckind == "binary":
+                # The path is sanitized like every excerpt
+                # (round 5 low): a crafted filename could
+                # otherwise smuggle control characters into
+                # this terminal display.
+                hits.append((f"printable text in "
+                             f"{_sanitize(cpath)}",
+                             text.strip()[:120]))
+            else:
+                lines = [ln.strip() for ln in text.splitlines()
+                         if rx.search(ln)]
+                if not lines:
+                    lines = ["(match spans lines of one hunk)"]
+                for ln in lines:
+                    hits.append(("added lines of the diff",
+                                 ln[:120]))
+        if hits:
+            per_pattern.append((entry, hits))
+    if not per_pattern:
+        say(f"no pattern matches in {rng} — nothing to override.")
+        return 0
+    print(f"repo-kit override — {repo}")
+    print(f"Range {rng}, HEAD {head[:12]}. The exact matches are "
+          "shown ONLY here — the check's output never contains "
+          "them. Approving grants an allowance for exactly the "
+          "patterns listed, nothing else:")
+
+    def show_hits(entry, hits, limit):
+        for where, excerpt in hits[:limit]:
+            print(f"      in {where}: {_sanitize(excerpt)}")
+        if len(hits) > limit:
+            print(f"      … and {len(hits) - limit} more — too "
+                  "many to review line by line; this pattern is "
+                  "almost certainly too broad (narrow it in "
+                  f"{entry['path']})")
+
+    truncated = []
+    for entry, hits in per_pattern:
+        print(f"  {entry['tier']} #{entry['number']} "
+              f"/{_sanitize(entry['raw'])}/ — {len(hits)} "
+              "matching line(s):")
+        if args.all:
+            show_hits(entry, hits, 200)
+            continue
+        for where, excerpt in hits[:5]:
+            print(f"      in {where}: {_sanitize(excerpt)}")
+        if len(hits) > 5:
+            truncated.append((entry, hits))
+            print(f"      … and {len(hits) - 5} more line(s) for "
+                  "this pattern (same pattern, same approval)")
+            # The narrowing nudge (owner ruling, 2026-11-19):
+            # many matches for one pattern usually means the
+            # pattern wants narrowing, and the owner should be
+            # told WHERE it lives while they are looking at it.
+            print("      Many matches for one pattern — if these "
+                  "are false positives, the pattern may need "
+                  f"narrowing: {entry['path']}")
+            print("      See them all before deciding: answer "
+                  "yes below, or re-run as `repo-kit override "
+                  "--all`.")
+    # The inline expansion offer (owner ruling, 2026-11-19):
+    # the behaviour to train is seeing ALL the matches before
+    # approving, so the offer comes HERE — in the flow, before
+    # the grant prompt — not as a separate command the owner
+    # has to know about. The path of least resistance runs
+    # through the full list.
+    for entry, hits in truncated:
+        answer = _ask(
+            f"Show all {len(hits)} matches for "
+            f"{entry['tier']} #{entry['number']} now? [y/N] ")
+        if (answer or "").lower() in ("y", "yes"):
+            show_hits(entry, hits, 200)
+    print("Approving skips each pattern above for ALL of its "
+          f"matches in these {len(scanned_commits)} commit(s) — "
+          "the approval is per pattern in these commits, never "
+          "per line.")
+    if _ask('Type "override" to grant a one-push override for '
+            "exactly these patterns and commits: ") \
+            != "override":
+        say("not granted — nothing was written.")
+        return 1
+    expires = int(time.time()) + args.minutes * 60
+    granted = datetime.datetime.now().astimezone().isoformat(
+        timespec="seconds")
+    path = os.path.join(git_dir, "repokit-override.json")
+    # Atomic write (v0.4.8 fix pass, secondary review item 17):
+    # like cmd_allow_oversize — write to path + ".tmp", chmod
+    # 0600, os.replace into place, so a crash mid-write never
+    # leaves a truncated allowance the check could misread.
+    _tmp = path + ".tmp"
+    with open(_tmp, "w", encoding="utf-8") as fh:
+        json.dump({"head": head, "range": rng,
+                   "base_sha": base_sha, "head_sha": head,
+                   "commits": scanned_commits,
+                   "patterns": [e["raw"] for e, _ in per_pattern],
+                   "expires": expires,
+                   "granted_at": granted}, fh, indent=2)
+    os.chmod(_tmp, 0o600)
+    os.replace(_tmp, path)
+    until = datetime.datetime.fromtimestamp(expires).astimezone() \
+        .strftime("%H:%M:%S")
+    names = ", ".join(f"{e['tier']} #{e['number']}"
+                      for e, _ in per_pattern)
+    print()
+    print("=" * 64)
+    print("Override granted.")
+    print(f"  Wrote:    {path}")
+    print(f"  Covers:   one push of exactly these "
+          f"{len(scanned_commits)} commit(s), tip {head[:12]}, "
+          f"until {until} ({args.minutes} minutes)")
+    print(f"  Patterns: {names} only — any other pattern still "
+          "blocks the push.")
+    print("  The pattern check consumes it when the tier applies "
+          "it, and prints that it did.")
+    print("  A different commit set — new commits, or this tip on "
+          "a different base — does not apply it: grant again for "
+          "the new set, if the matches are still false positives.")
+    print("  Next step: re-run `git push` now.")
+    print("=" * 64)
     return 0
 
 
@@ -551,6 +1449,55 @@ def cmd_init(tooling, repo):
             os.path.join(tooling, "templates", "workflows", name),
             os.path.join(repo, ".github", "workflows", name),
             f".github/workflows/{name}")
+    # CODEOWNERS (v0.4.8, pass 6 major 5): variant B's ruleset
+    # requires Code Owner review, which is INERT without a
+    # CODEOWNERS file — and up to v0.4.7 nothing seeded one and
+    # nothing warned, so a provisioned variant B repo believed it
+    # had owner review when it had none. Seed one at the repo
+    # root, owned by the repo's owner where the origin remote
+    # names one; provision (variant B) also checks for it.
+    owners_path = os.path.join(repo, "CODEOWNERS")
+    # Check all three locations provision probes (v0.4.8 fix
+    # pass, secondary review item 3): seeding a root file over
+    # an existing .github/CODEOWNERS or docs/CODEOWNERS would
+    # shadow the file already in force — seed nothing if any
+    # location already has one, and say so.
+    owners_existing = None
+    for _rel in ("CODEOWNERS", ".github/CODEOWNERS",
+                 "docs/CODEOWNERS"):
+        if os.path.exists(os.path.join(repo, _rel)):
+            owners_existing = _rel
+            break
+    if owners_existing is not None:
+        say(f"skip CODEOWNERS (exists at {owners_existing} — "
+            "project content is never overwritten)")
+    else:
+        owner = None
+        proc = subprocess.run(
+            ["git", "-C", repo, "remote", "get-url", "origin"],
+            capture_output=True, text=True)
+        if proc.returncode == 0:
+            m = re.search(r"github\.com[:/]([\w.-]+)/",
+                          proc.stdout.strip())
+            if m:
+                owner = m.group(1)
+        with open(owners_path, "w", encoding="utf-8") as fh:
+            fh.write("# Code owners — the variant B ruleset's Code "
+                     "Owner\n# review rule is inert without this "
+                     "file. One rule per line:\n# <path pattern> "
+                     "<@owner ...>. Seeded by `repo-kit init`.\n")
+            if owner:
+                fh.write(f"* @{owner}\n")
+            else:
+                fh.write("# repo-kit could not infer the owner "
+                         "from an origin remote —\n# replace the "
+                         "line below with the real owner and "
+                         "uncomment it.\n# * @your-github-username\n")
+        say("wrote CODEOWNERS" + (
+            f" (owner @{owner}, from the origin remote)"
+            if owner else
+            " (placeholder — no origin remote named an owner; "
+            "edit it before relying on variant B review)"))
     copy_if_absent(os.path.join(tooling, "templates", "review",
                                 ".gitignore"),
                    os.path.join(repo, "review", ".gitignore"),
@@ -561,8 +1508,609 @@ def cmd_init(tooling, repo):
         "everything under review/ except its .gitignore is ignored)")
     merge_gitignore(tooling, repo)
     install_hooks(tooling, repo)
-    say("done. Next: edit project.public.yaml + PLAN.md, add the "
-        "GATE_PATTERNS repo secret, enable Pages (source: GitHub Actions).")
+    say("done. Next: edit project.public.yaml + PLAN.md, then run "
+        "`repo-kit provision` — it sets the GATE_PATTERNS secret "
+        "from your patterns-relaxed.txt and, because this repo has "
+        "a dashboard workflow, sets Pages to source from GitHub "
+        "Actions. No manual repo settings remain.")
+
+
+def _git_dir(repo):
+    out = subprocess.run(["git", "-C", repo, "rev-parse", "--git-dir"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    return os.path.join(repo, out.stdout.strip())
+
+
+CHECK_NAMES = {
+    "patterns": "10-pattern-and-format.sh",
+    "gitleaks": "20-gitleaks.sh",
+    "hygiene": "30-file-hygiene.sh",
+    "file-hygiene": "30-file-hygiene.sh",
+    "shellcheck": "40-shellcheck.sh",
+}
+CANONICAL_CHECKS = ["patterns", "gitleaks", "hygiene", "shellcheck"]
+
+
+def _canon_check(name):
+    """Canonical friendly name for a check, from a friendly name,
+    an alias, or a script basename; None when unknown."""
+    n = name.strip().lower()
+    if n in CHECK_NAMES:
+        return "hygiene" if n == "file-hygiene" else n
+    for friendly, base in CHECK_NAMES.items():
+        if n == base:
+            return "hygiene" if friendly == "file-hygiene" else friendly
+    return None
+
+
+def _disabled_checks(repo):
+    out = subprocess.run(
+        ["git", "-C", repo, "config", "--get",
+         "repokit.disabled-checks"], capture_output=True, text=True)
+    if out.returncode != 0:
+        return []
+    current = []
+    for n in out.stdout.replace(",", " ").split():
+        c = _canon_check(n)
+        if c and c not in current:
+            current.append(c)
+    return current
+
+
+def cmd_checks(tooling, repo, args):
+    """repo-kit checks [--off NAME] [--on NAME] — show or change
+    this repo's disabled-check list (git config
+    repokit.disabled-checks). The escape hatch: a check that
+    cannot run in someone's environment can be switched off for
+    THIS repo instead of locking them out of pushing. The hook
+    honors the list only in voluntary installs — an enforced
+    install (hooks/enforced.marker in the tooling checkout)
+    ignores it, and says so at push time."""
+    if _git_dir(repo) is None:
+        say("not a git repo — run this inside a repository")
+        return 2
+    current = _disabled_checks(repo)
+    changed = False
+    for name in (args.off or []) + (args.on or []):
+        if _canon_check(name) is None:
+            say(f"unknown check '{name}' — known checks: "
+                + ", ".join(CANONICAL_CHECKS))
+            return 2
+    for name in args.off or []:
+        c = _canon_check(name)
+        if c not in current:
+            current.append(c)
+            changed = True
+    for name in args.on or []:
+        c = _canon_check(name)
+        if c in current:
+            current.remove(c)
+            changed = True
+    if changed:
+        if current:
+            subprocess.run(["git", "-C", repo, "config",
+                            "repokit.disabled-checks",
+                            ",".join(current)], check=False)
+        else:
+            subprocess.run(["git", "-C", repo, "config", "--unset",
+                            "repokit.disabled-checks"], check=False)
+    for c in CANONICAL_CHECKS:
+        say(f"  {c}: {'DISABLED' if c in current else 'enabled'}")
+    if os.path.exists(os.path.join(tooling, "hooks",
+                                   "enforced.marker")):
+        say("note: the tooling checkout is in AGENT mode "
+            "(hooks/enforced.marker) — this list is IGNORED at "
+            "push time there; it takes effect in personal "
+            "installs (`repo-kit enforce off`).")
+    return 0
+
+
+def cmd_uninstall(tooling, repo):
+    """repo-kit uninstall — remove what `repo-kit init` installed
+    in THIS repo. A gating tool that cannot be cleanly removed
+    will be removed badly, so this is a first-class command: it
+    takes out the hook (only when it is verifiably ours), the
+    .gitignore block, the override state, the disable list, and
+    any workflow file still byte-identical to its template — and
+    it reports, by name, everything it deliberately leaves."""
+    git_dir = _git_dir(repo)
+    if git_dir is None:
+        say("not a git repo — nothing to uninstall")
+        return 0
+    removed = []
+    hook = os.path.join(git_dir, "hooks", "pre-push")
+    if os.path.exists(hook):
+        text = open(hook, encoding="utf-8",
+                    errors="replace").read()
+        if "repo-tooling pre-push dispatcher" in text:
+            os.remove(hook)
+            removed.append(".git/hooks/pre-push (the gate hook)")
+        else:
+            say("left alone: .git/hooks/pre-push exists but is "
+                "not the repo-tooling dispatcher — it isn't ours "
+                "to remove")
+    ovr = os.path.join(git_dir, "repokit-override.json")
+    if os.path.exists(ovr):
+        os.remove(ovr)
+        removed.append("the stored owner-override state")
+    out = subprocess.run(["git", "-C", repo, "config", "--get",
+                          "repokit.disabled-checks"],
+                         capture_output=True, text=True)
+    if out.returncode == 0:
+        subprocess.run(["git", "-C", repo, "config", "--unset",
+                        "repokit.disabled-checks"], check=False)
+        removed.append("this repo's disabled-checks list")
+    gi = os.path.join(repo, ".gitignore")
+    if os.path.exists(gi):
+        existing = open(gi, encoding="utf-8").read()
+        if BLOCK_BEGIN in existing and BLOCK_END in existing:
+            head, _, rest = existing.partition(BLOCK_BEGIN)
+            _, _, tail = rest.partition(BLOCK_END)
+            kept = (head.rstrip("\n") + "\n" +
+                    tail.lstrip("\n")).strip("\n")
+            if kept.strip():
+                with open(gi, "w", encoding="utf-8") as fh:
+                    fh.write(kept + "\n")
+                removed.append("the repo-tooling block in "
+                               ".gitignore")
+            else:
+                os.remove(gi)
+                removed.append(".gitignore (it held only the "
+                               "repo-tooling block)")
+    for name in WORKFLOW_FILES:
+        target = os.path.join(repo, ".github", "workflows", name)
+        tmpl = os.path.join(tooling, "templates", "workflows",
+                            name)
+        if os.path.exists(target):
+            if os.path.exists(tmpl) and \
+                    open(target, "rb").read() == \
+                    open(tmpl, "rb").read():
+                os.remove(target)
+                removed.append(f".github/workflows/{name} "
+                               "(unmodified template)")
+            else:
+                say(f"left in place: .github/workflows/{name} — "
+                    "it differs from the template (edited since "
+                    "install, so it's yours now)")
+    for d in (os.path.join(repo, ".github", "workflows"),
+              os.path.join(repo, ".github")):
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+    hp = subprocess.run(["git", "-C", repo, "config", "--get",
+                         "core.hooksPath"], capture_output=True,
+                        text=True)
+    if hp.returncode == 0 and tooling in hp.stdout:
+        say("note: core.hooksPath in this repo points at the "
+            "tooling checkout — repo-kit never sets it (a "
+            "supervisor may have); left as-is.")
+    for r in removed:
+        say(f"removed {r}")
+    if not removed:
+        say("nothing of repo-kit's was installed in this repo")
+    say("deliberately left: PLAN.md, project.public.yaml, "
+        "CONTRIBUTING.md, adr/ and review/ (your content once "
+        "created); the pattern lists in the tooling checkout "
+        "(shared by all repos); and anything `repo-kit provision` "
+        "set on GitHub (the GATE_PATTERNS secret, ruleset, Pages) "
+        "— repo-kit has no unprovision; those live in the repo's "
+        "GitHub settings.")
+    return 0
+
+
+MARKER_TEXT = """\
+This tooling checkout is in AGENT mode.
+
+Created by `repo-kit enforce on` — normally by the supervisor who
+builds an agent's container, where this file sits inside the
+read-only hooks/ mount and the agent cannot remove it. While it
+exists, the gate takes NO gate-critical input from the shell:
+service coordinates and the check profile come only from
+hooks/enforced.env (supervisor-written), pattern lists only from
+the checkout root, and "no pattern source" fails closed instead
+of skipping.
+
+A personal install has no marker and needs none: turn agent mode
+off with `repo-kit enforce off`. Only this file's presence
+matters; nothing reads its content.
+"""
+
+
+def _write_enforced_env(path, text):
+    """Write hooks/enforced.env at 0640 (v0.4.4, round 4 item 6
+    set 0600 for the token it carries; round 5 item 5 relaxed
+    it to group-readable): a container whose agent runs as a
+    different uid than the file's owner was locked out by 0600
+    entirely — the supervisor runs the container with a
+    matching group, or with --user, instead. Created and
+    re-chmodded on every write (the launcher rewrites the file
+    on each launch; the mode must not drift to the umask
+    default)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(path, 0o640)
+
+
+def cmd_enforce(tooling, args):
+    """repo-kit enforce [on|off] — turn AGENT mode on or off for
+    this tooling checkout, or report its state. Agent mode is the
+    mode for a containerized agent with its own identity: the
+    gate stops believing the shell (anything the agent's shell
+    can set, the agent can fake) and reads its configuration
+    only from supervisor-written files. It is a mode switch, not
+    a trial flag: personal installs leave it off, and the
+    supervisor turns it on when building the agent's environment
+    — before the read-only mount makes it unchangeable."""
+    hooks_dir = os.path.join(tooling, "hooks")
+    marker = os.path.join(hooks_dir, "enforced.marker")
+    env_path = os.path.join(hooks_dir, "enforced.env")
+    action = args.state
+    if action == "on":
+        # Guard (v0.4.4, round 4 item 5): flipping the checkout
+        # this very repo-kit lives in — on a personal machine,
+        # that is the user's OWN checkout, and their own pushes
+        # would silently become agent-mode pushes (no override,
+        # no checks --off, shell ignored, fail-closed). The
+        # intended pattern is a SEPARATE checkout for the
+        # container mount; make the user say --yes when they
+        # really mean this one.
+        own = os.path.realpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ".."))
+        if os.path.realpath(tooling) == own and not args.yes:
+            say("refusing to turn agent mode on for THIS checkout "
+                "without --yes: it is the checkout repo-kit itself "
+                "lives in, so on a personal machine it is almost "
+                "certainly your own — and your own pushes from it "
+                "would become agent-mode pushes (override and "
+                "checks --off stop working, the shell is ignored, "
+                "a missing pattern source fails closed). The "
+                "intended pattern is a separate checkout for the "
+                "container mount, flipped instead. If you really "
+                "mean THIS checkout, re-run with --yes.")
+            return 2
+        token = None
+        if args.url:
+            # The token never travels in argv (round 4 item 6 —
+            # argv is world-readable in ps and lands in shell
+            # history): env var, hidden prompt, or stdin.
+            token = os.environ.get("REPOKIT_ENFORCE_TOKEN")
+            if not token and sys.stdin.isatty():
+                import getpass
+                token = getpass.getpass(
+                    "pattern service token (input hidden): ")
+            if not token and not sys.stdin.isatty():
+                token = sys.stdin.readline().strip()
+            if not token:
+                say("a service URL needs its token: set "
+                    "REPOKIT_ENFORCE_TOKEN, or pipe the token on "
+                    "stdin, or run in a terminal to be prompted. "
+                    "Nothing was written.")
+                return 2
+        # The env file is written BEFORE the marker (round 5
+        # low): the marker is the mode switch, so a failed env
+        # write must not leave agent mode half-on with no
+        # configuration behind it.
+        if os.path.exists(env_path):
+            # Line-edit preservation (v0.4.8 fix pass, secondary
+            # review item 17): like the pattern-service
+            # launcher's path — regenerating enforced.env
+            # wholesale deleted hand-added supervisor lines
+            # (REPOKIT_TRUSTED_PATH included) on a re-run.
+            # Enforce owns REPOKIT_CHECK_PROFILE, and the
+            # service URL/token keys when provided; every other
+            # line passes through untouched, missing owned keys
+            # are appended, and _write_enforced_env keeps the
+            # 0640 mode handling.
+            owned = [("REPOKIT_CHECK_PROFILE",
+                      f"REPOKIT_CHECK_PROFILE={args.profile}")]
+            if args.url:
+                owned.append(("REPOKIT_PATTERNS_URL",
+                              f"REPOKIT_PATTERNS_URL={args.url}"))
+                owned.append(
+                    ("REPOKIT_PATTERNS_TOKEN",
+                     f"REPOKIT_PATTERNS_TOKEN={token}"))
+            owned_map = dict(owned)
+            with open(env_path, encoding="utf-8") as fh:
+                existing_lines = fh.read().splitlines()
+            seen = set()
+            out_lines = []
+            for ln in existing_lines:
+                key = ln.split("=", 1)[0].strip() \
+                    if "=" in ln else ""
+                if key in owned_map:
+                    out_lines.append(owned_map[key])
+                    seen.add(key)
+                else:
+                    out_lines.append(ln)
+            for key, line in owned:
+                if key not in seen:
+                    out_lines.append(line)
+            _write_enforced_env(
+                env_path, "\n".join(out_lines) + "\n")
+        else:
+            lines = ["# Agent-mode gate configuration — written by "
+                     "`repo-kit enforce on`; the pattern-service "
+                     "launcher refreshes the service lines on each "
+                     "launch.\n",
+                     "# The gate reads service coordinates and the "
+                     "check profile from THIS file only in agent "
+                     "mode.\n",
+                     f"REPOKIT_CHECK_PROFILE={args.profile}\n"]
+            if args.url:
+                lines.append(f"REPOKIT_PATTERNS_URL={args.url}\n")
+                lines.append(f"REPOKIT_PATTERNS_TOKEN={token}\n")
+            _write_enforced_env(env_path, "".join(lines))
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(MARKER_TEXT)
+        say("agent mode ON for this tooling checkout:")
+        say("  hooks/enforced.marker created (the mode switch) and "
+            "hooks/enforced.env written (profile "
+            f"{args.profile}"
+            + (", service coordinates as given)." if args.url
+               else "; no service coordinates — the launcher "
+                    "writes them on each launch, or the gate "
+                    "uses lists from the checkout root)."))
+        say("  In agent mode the gate ignores the shell for "
+            "service coordinates, profile and pattern sources, "
+            "and fails closed when it has no pattern source. In "
+            "a container deployment the supervisor runs this "
+            "BEFORE mounting hooks/ read-only, so the gated "
+            "process cannot turn it back off.")
+        return 0
+    if action == "off":
+        removed = []
+        for path, name in ((marker, "hooks/enforced.marker"),
+                           (env_path, "hooks/enforced.env")):
+            if os.path.exists(path):
+                os.remove(path)
+                removed.append(name)
+        if removed:
+            say("agent mode OFF — removed " + " and ".join(removed)
+                + ". This checkout is a personal install again: "
+                "a missing pattern list is a coverage gap (the "
+                "push asks on the terminal and fails closed "
+                "without one), and the shell is believed "
+                "(v0.4.8 fix pass, secondary review item 12).")
+        else:
+            say("agent mode was already off for this checkout.")
+        return 0
+    # status
+    if os.path.exists(marker):
+        say("mode: AGENT (hooks/enforced.marker present)")
+        if os.path.exists(env_path):
+            for line in open(env_path, encoding="utf-8"):
+                line = line.strip()
+                if line.startswith("REPOKIT_PATTERNS_URL="):
+                    say(f"  service: {line.split('=', 1)[1]}")
+                elif line.startswith("REPOKIT_CHECK_PROFILE="):
+                    say(f"  profile: {line.split('=', 1)[1]}")
+                elif line.startswith("REPOKIT_PATTERNS_TOKEN="):
+                    say("  service token: present (not shown)")
+        else:
+            say("  hooks/enforced.env absent — the gate will use "
+                "lists from the checkout root, and fail closed "
+                "if there are none")
+    else:
+        say("mode: personal (no hooks/enforced.marker) — the "
+            "gate believes the user's shell; a missing pattern "
+            "list is a coverage gap (the push asks on the "
+            "terminal and fails closed without one) "
+            "(v0.4.8 fix pass, secondary review item 12)")
+    return 0
+
+
+def cmd_allow_oversize(tooling, args):
+    """Grant the pattern service's one-shot oversize allowance.
+
+    Supervisor-side (v0.4.8): the SERVICE has honoured an owner
+    oversize allowance since v0.4.2 — a one-shot JSON record at
+    REPOKIT_PATTERN_ALLOWANCE_FILE, a path the checked environment
+    cannot write — but repo-kit shipped no command to grant it;
+    the check's error text pointed at a devbox command that does
+    not exist in repo-kit. This is that command. It writes the
+    record the service already understands: the service deletes
+    it BEFORE the scan it covers runs, an over-ceiling attempt
+    does not consume it, and it never raises the service's
+    lifetime scan cap. Run it on the host, as the supervisor —
+    never from inside the checked environment.
+    """
+    path = args.file or os.environ.get(
+        "REPOKIT_PATTERN_ALLOWANCE_FILE")
+    if not path:
+        say("no allowance file path — pass --file PATH, or set "
+            "REPOKIT_PATTERN_ALLOWANCE_FILE to the same path the "
+            "pattern service was started with. (Without that path "
+            "configured, the service can never honour an "
+            "allowance.)")
+        return 2
+    if not 1 <= args.minutes <= 60:
+        say("--minutes must be between 1 and 60 (the allowance is "
+            "meant to cover one immediate retry, not to linger)")
+        return 2
+    if args.ceiling_mb <= 0:
+        say("--ceiling-mb must be positive")
+        return 2
+    instance = args.instance
+    if instance is None:
+        instance = os.environ.get("REPOKIT_PATTERN_INSTANCE", "")
+    ceiling = int(args.ceiling_mb * 1024 * 1024)
+    expires = int(time.time()) + args.minutes * 60
+    record = {"instance": instance, "expires": expires,
+              "ceiling": ceiling}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    until = datetime.datetime.fromtimestamp(expires).astimezone() \
+        .strftime("%H:%M:%S")
+    print("Oversize allowance granted.")
+    print(f"  Wrote:    {path}")
+    print(f"  Covers:   ONE scan up to {args.ceiling_mb:g} MiB, "
+          f"until {until} ({args.minutes} minutes)")
+    print(f"  Instance: {instance or '(the default instance)'} — "
+          "the record is honoured only by a service started with "
+          "the same instance name and this allowance path.")
+    print("  The service consumes it on the scan it covers; an "
+          "over-ceiling attempt does not consume it.")
+    print("  Next step: retry the push now.")
+    return 0
+
+
+def cmd_pattern_service(tooling, args):
+    """Run the host pattern service in the foreground and print the
+    client environment. The service itself is tools/pattern_service.py
+    (stdlib-only); this command is the human-facing launcher — it
+    resolves the pattern lists, mints a per-run token when the caller
+    didn't supply one, and prints exactly what an agent/container
+    checkout needs in its environment."""
+    import secrets
+    import subprocess
+    files = []
+    for name in ("patterns-relaxed.txt", "patterns-strict.txt"):
+        path = os.path.join(tooling, name)
+        if os.path.exists(path):
+            files.append(path)
+    if not files:
+        say("no pattern lists found in the tooling checkout — run "
+            "`repo-kit setup` first (a pattern-less service fails "
+            "every scan closed, which is safe but useless)")
+        return 2
+    if len(files) == 1 and files[0].endswith("-strict.txt"):
+        say("note: only patterns-strict.txt found — the service will "
+            "gate on the strict tier alone")
+    token = os.environ.get("REPOKIT_PATTERNS_TOKEN") or \
+        secrets.token_urlsafe(24)
+    # The client this launcher exists for is a CONTAINER (v0.4.8,
+    # pass 5): with the default loopback bind, the old derivation
+    # printed http://127.0.0.1:<port> — the container's OWN
+    # loopback, where nothing listens (it failed closed, but it
+    # could never work). A loopback or all-interfaces bind is
+    # reached from a container as host.docker.internal; an
+    # explicit bind address is used as-is; --client-host wins
+    # over both.
+    if args.client_host:
+        client_host = args.client_host
+    elif args.host in ("0.0.0.0", "127.0.0.1", "localhost", "::1"):
+        client_host = "host.docker.internal"
+    else:
+        client_host = args.host
+    if os.path.exists(os.path.join(tooling, "hooks",
+                                   "enforced.marker")):
+        # Agent mode: the gate reads its service coordinates from
+        # hooks/enforced.env ONLY (v0.4.3) — so refresh that file
+        # with this run's coordinates. The supervisor runs this
+        # launcher host-side, where the tooling checkout is
+        # writable; inside the container the same directory is a
+        # read-only mount, so the gated process can read the file
+        # but never rewrite it.
+        env_path = os.path.join(tooling, "hooks", "enforced.env")
+        url_line = (f"REPOKIT_PATTERNS_URL=http://{client_host}:"
+                    f"{args.port}")
+        token_line = f"REPOKIT_PATTERNS_TOKEN={token}"
+        if os.path.exists(env_path):
+            # Line-edit, never rewrite (v0.4.8, pass 5): the old
+            # code regenerated the file with exactly three lines
+            # on every launch, silently deleting
+            # REPOKIT_TRUSTED_PATH and any supervisor-chosen
+            # non-security profile. The launcher owns the URL and
+            # token lines; every other line — the profile
+            # included — is the supervisor's and stays
+            # byte-identical.
+            with open(env_path, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+            seen = set()
+            out_lines = []
+            for ln in lines:
+                key = ln.split("=", 1)[0].strip() \
+                    if "=" in ln else ""
+                if key == "REPOKIT_PATTERNS_URL":
+                    out_lines.append(url_line)
+                    seen.add(key)
+                elif key == "REPOKIT_PATTERNS_TOKEN":
+                    out_lines.append(token_line)
+                    seen.add(key)
+                else:
+                    out_lines.append(ln)
+            for key, line in (("REPOKIT_PATTERNS_URL", url_line),
+                              ("REPOKIT_PATTERNS_TOKEN", token_line)):
+                if key not in seen:
+                    out_lines.append(line)
+            with open(env_path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(out_lines) + "\n")
+            os.chmod(env_path, 0o640)
+        else:
+            _write_enforced_env(
+                env_path,
+                "# Agent-mode gate configuration — written "
+                "by the supervisor (repo-kit pattern-service, "
+                "each launch) or by `repo-kit enforce on`.\n"
+                "# The gate reads service coordinates and "
+                "the check profile from THIS file only; the "
+                "shell environment is never consulted for "
+                "them in agent mode.\n"
+                f"{url_line}\n"
+                f"{token_line}\n"
+                "REPOKIT_CHECK_PROFILE=security\n")
+        say("agent mode is ON for this checkout: hooks/enforced.env "
+            "updated with this run's service coordinates (other "
+            "lines left untouched) — the gate will use that file "
+            "and ignore the shell environment for them.")
+    say("pattern service starting — give the agent/container "
+        "checkout this environment:")
+    say(f"  REPOKIT_PATTERNS_URL=http://{client_host}:{args.port}")
+    say(f"  REPOKIT_PATTERNS_TOKEN={token}")
+    say("  REPOKIT_CHECK_PROFILE=security")
+    say("With that set, the checkout's normal pre-push hook runs the "
+        "pattern tier through this service: commit text goes out, "
+        "tier names come back, the lists never leave this machine. "
+        "If the service is unreachable the check fails closed — "
+        "that is by design, not a bug to work around.")
+    say("Honesty note: this URL + token, handed to an agent with "
+        "instructions, enforces nothing by itself — an agent that "
+        "can install a hook can also remove it. Enforcement comes "
+        "from installing the hook where the agent cannot write "
+        "(read-only mount, supervisor-pinned core.hooksPath) and "
+        "turning agent mode on (`repo-kit enforce on`), so the "
+        "gate takes its configuration from supervisor-written "
+        "files, never from the agent's shell: see 'Agent mode' in "
+        "the README and templates/agent-enforced/.")
+    if args.host == "0.0.0.0":
+        say("Note: binding 0.0.0.0 exposes the service on every "
+            "interface, the LAN included, for its lifetime. If a "
+            "container is the only client, the tighter binds in "
+            "the service's EXPOSURE ladder are worth trying first: "
+            "loopback often suffices on Docker Desktop / OrbStack "
+            "(host.docker.internal proxies to it), and on Linux "
+            "the docker0 / host-gateway address reaches containers "
+            "without reaching the LAN.")
+    env = dict(os.environ)
+    env["REPOKIT_PATTERN_TOKEN"] = token
+    env["REPOKIT_PATTERN_FILES"] = "\n".join(files)
+    env["REPOKIT_PATTERN_PORT"] = str(args.port)
+    env["REPOKIT_PATTERN_HOST"] = args.host
+    # The service script ships with THIS repo-kit installation (the
+    # checkout containing install/repo-kit); the pattern LISTS come
+    # from --tooling. In the normal case they are the same checkout,
+    # but an installed copy pointed at another checkout's lists must
+    # still run its own service.
+    install_root = os.path.dirname(os.path.dirname(
+        os.path.realpath(__file__)))
+    try:
+        proc = subprocess.run(
+            [sys.executable,
+             os.path.join(install_root, "tools",
+                          "pattern_service.py")],
+            env=env)
+        return proc.returncode
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_packet_dispatch(rest):
@@ -610,12 +2158,22 @@ def main(argv=None):
                "run `repo-kit packet --help` for its options (it is "
                "dispatched separately; its flags pass through).")
     sub = ap.add_subparsers(dest="command", required=True,
-                            metavar="{init,hooks,env,setup,provision,"
-                                    "packet}")
-    for name in ("init", "hooks"):
+                            metavar="{init,hooks,uninstall,checks,"
+                                    "enforce,env,setup,provision,"
+                                    "override,pattern-service,"
+                                    "allow-oversize,packet}")
+    for name in ("init", "hooks", "uninstall"):
         sp = sub.add_parser(name)
         sp.add_argument("repo", nargs="?", default=".")
         sp.add_argument("--tooling", default=default_tooling)
+    sp = sub.add_parser("checks")
+    sp.add_argument("repo", nargs="?", default=".")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--off", action="append", default=[],
+                    help="disable a check for this repo (patterns, "
+                         "gitleaks, hygiene, shellcheck)")
+    sp.add_argument("--on", action="append", default=[],
+                    help="re-enable a check for this repo")
     sp = sub.add_parser("env")
     sp.add_argument("--tooling", default=default_tooling)
     sp.add_argument("--hooks-root",
@@ -624,7 +2182,7 @@ def main(argv=None):
     sp = sub.add_parser("setup")
     sp.add_argument("--tooling", default=default_tooling)
     sp.add_argument("--force", action="store_true",
-                    help="replace an existing patterns.txt")
+                    help="replace an existing patterns-relaxed.txt")
     sp.add_argument("--email", action="append", default=[])
     sp.add_argument("--domain", action="append", default=[])
     sp.add_argument("--handle", action="append", default=[])
@@ -633,6 +2191,68 @@ def main(argv=None):
     sp.add_argument("--no-gmail", action="store_true")
     sp.add_argument("--no-tailnet", action="store_true")
     sp.add_argument("--no-paths", action="store_true")
+    sp = sub.add_parser("override")
+    sp.add_argument("repo", nargs="?", default=".")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--minutes", type=int, default=10,
+                    help="allowance lifetime in minutes (default 10); "
+                         "it also ends when the tier applies it, or "
+                         "when the push's commit set differs from "
+                         "the approved one")
+    sp.add_argument("--all", action="store_true",
+                    help="show all matches for each pattern (up to "
+                         "200 per pattern) "
+                         "(default: the first 5 per pattern, with "
+                         "an in-flow offer to expand each)")
+    sp = sub.add_parser("enforce")
+    sp.add_argument("state", nargs="?", choices=["on", "off"],
+                    default=None,
+                    help="on/off; omit to report the current mode")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--profile", default="security",
+                    choices=["full", "security"],
+                    help="check profile written for agent mode "
+                         "(default security)")
+    sp.add_argument("--url", default=None,
+                    help="pattern service URL for agent mode")
+    sp.add_argument("--yes", action="store_true",
+                    help="confirm turning agent mode on for the "
+                         "checkout repo-kit itself lives in (your "
+                         "own pushes from it become agent-mode "
+                         "pushes); not needed for a separate "
+                         "container checkout")
+    sp = sub.add_parser("pattern-service")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--port", type=int, default=18741,
+                    help="listen port (default 18741)")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="bind address (default 127.0.0.1; use "
+                         "0.0.0.0 when containers must reach the "
+                         "service via host.docker.internal)")
+    sp.add_argument("--client-host", default=None,
+                    help="host name written into the client "
+                         "environment / enforced.env (default: "
+                         "host.docker.internal for a loopback or "
+                         "0.0.0.0 bind, else the bind address)")
+    sp = sub.add_parser("allow-oversize")
+    sp.add_argument("--tooling", default=default_tooling)
+    sp.add_argument("--file", default=None,
+                    help="allowance record path (default: "
+                         "$REPOKIT_PATTERN_ALLOWANCE_FILE — the "
+                         "same path the pattern service was "
+                         "started with)")
+    sp.add_argument("--instance", default=None,
+                    help="service instance name the allowance is "
+                         "bound to (default: "
+                         "$REPOKIT_PATTERN_INSTANCE, or the "
+                         "service's default instance)")
+    sp.add_argument("--minutes", type=int, default=10,
+                    help="allowance lifetime in minutes "
+                         "(default 10, range 1-60)")
+    sp.add_argument("--ceiling-mb", type=float, default=32,
+                    help="largest scan the allowance covers, in "
+                         "MiB (default 32 — the figure the "
+                         "check's own error message promises)")
     sp = sub.add_parser("provision")
     sp.add_argument("target", nargs="?", default=None,
                     help="OWNER/REPO of the GitHub repo to bring up to "
@@ -658,6 +2278,15 @@ def main(argv=None):
                     help="status-check context the ruleset requires "
                          "(repeatable; default: the template's — the "
                          "gate workflow's 'gate / gate')")
+    sp.add_argument("--skip-secret", action="store_true",
+                    help="do not set the GATE_PATTERNS repository "
+                         "secret from patterns-relaxed.txt (default: "
+                         "set it; without a list you are offered "
+                         "`repo-kit setup` first)")
+    sp.add_argument("--skip-pages", action="store_true",
+                    help="do not set the GitHub Pages source to "
+                         "GitHub Actions (default: set it when the "
+                         "repo contains a dashboard workflow)")
     sp.add_argument("--bypass-user-id", type=int, default=None,
                     help="variant B: numeric GitHub user id for the "
                          "ruleset bypass list (pull-request mode, per "
@@ -674,8 +2303,20 @@ def main(argv=None):
         return cmd_env(tooling, args)
     if args.command == "provision":
         return cmd_provision(tooling, args)
+    if args.command == "override":
+        return cmd_override(tooling, args)
+    if args.command == "pattern-service":
+        return cmd_pattern_service(tooling, args)
+    if args.command == "allow-oversize":
+        return cmd_allow_oversize(tooling, args)
+    if args.command == "enforce":
+        return cmd_enforce(tooling, args)
     if args.command == "packet":  # unreachable: handled in main()
         return 2
+    if args.command == "uninstall":
+        return cmd_uninstall(tooling, os.path.abspath(args.repo))
+    if args.command == "checks":
+        return cmd_checks(tooling, os.path.abspath(args.repo), args)
     repo = os.path.abspath(args.repo)
     if args.command == "init":
         cmd_init(tooling, repo)

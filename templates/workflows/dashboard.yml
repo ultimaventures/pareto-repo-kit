@@ -24,4 +24,4 @@ concurrency:
 
 jobs:
   dashboard:
-    uses: ultimaventures/pareto-repo-kit/.github/workflows/dashboard.yml@v0.1.0
+    uses: ultimaventures/pareto-repo-kit/.github/workflows/dashboard.yml@v0.4.8

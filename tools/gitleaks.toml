@@ -1,0 +1,12 @@
+# Supervisor gitleaks configuration for AGENT mode (v0.4.4).
+#
+# 20-gitleaks.sh passes this file with --config when the install
+# is in agent mode, so the repository being scanned cannot choose
+# the rules that scan it (its own .gitleaks.toml is not loaded).
+# The extend block keeps gitleaks' full default ruleset — this
+# file changes WHOSE configuration applies, not which secrets are
+# detected. A supervisor who needs custom rules or allowlists
+# adds them here, in the tooling checkout (read-only to the
+# agent), never in the scanned repo.
+[extend]
+useDefault = true

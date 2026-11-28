@@ -17,7 +17,7 @@ on:
       tooling_ref:
         description: "tooling version tag to render with"
         type: string
-        default: "v0.1.0"
+        default: "v0.4.8"
 
 permissions:
   contents: read

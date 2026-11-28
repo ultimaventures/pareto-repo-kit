@@ -41,4 +41,4 @@ Installed by `repo-kit` (from the Pareto Easy Repo Kit repo). The hook runs the
 same checks as CI — plus gitleaks, if installed — before anything leaves
 your machine. Point it at your private pattern list (never committed):
 
-    export GATE_PATTERNS_FILE=/path/to/your/local/patterns-ongoing.txt
+    export GATE_PATTERNS_FILE=/path/to/your/local/patterns-relaxed.txt

@@ -1,0 +1,36 @@
+# How git finds the gate hook — two models, pick ONE.
+#
+# MODEL A: per-repo installed copy (what devbox runs).
+#   On the HOST, run `repo-kit hooks` in each work repo once. It
+#   installs the dispatcher into the repo's .git/hooks/pre-push
+#   with the tooling path BAKED IN, so no hooksPath is needed at
+#   all — git runs .git/hooks/pre-push by default. Mount the
+#   tooling checkout's hooks/ and tools/ read-only at the SAME
+#   absolute path inside the container (see the compose snippet),
+#   and the baked path resolves verbatim there. Nothing in this
+#   file is required for Model A.
+#   Honest label: Model A is DETECTION-ONLY. The hook file itself
+#   sits in .git/hooks/, which the agent can normally write — a
+#   supervisor can fingerprint it and notice tampering (devbox
+#   does), but the layout does not prevent the edit. For
+#   prevention, use Model B.
+#
+# MODEL B: a shared hooksPath (the prevention model).
+#   Point git at a hooks DIRECTORY on a read-only mount. The hook
+#   there is the RAW dispatcher: it derives its tooling path from
+#   its own location, so NO environment variable is needed or read
+#   (pre-v0.4.3 the raw hook needed REPO_TOOLING_HOME injected,
+#   which put a gate-critical path in the agent's shell — exactly
+#   what agent mode forbids). What remains is WHERE THIS SETTING
+#   LIVES (the enforcement is in the placement):
+#   * Best: written by the supervisor into each work repo's
+#     .git/config BEFORE the session starts, ideally paired with a
+#     fingerprint/drift check on .git/config so agent edits
+#     surface.
+#   * Or: a global/system gitconfig on a read-only mount inside
+#     the container (e.g. mount this file to /etc/gitconfig).
+#   * Never: a step the agent performs itself, or a file inside
+#     any path the agent can write. A hooksPath the agent can
+#     repoint is decoration, not enforcement.
+[core]
+	hooksPath = /path/to/tooling-checkout/hooks

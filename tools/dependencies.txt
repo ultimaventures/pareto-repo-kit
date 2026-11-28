@@ -1,10 +1,16 @@
 # dependencies.txt — RepoKit's external-tool dependency manifest.
 #
-# The single source of truth for the external programs RepoKit's
-# LOCAL checks call (the scripts in tools/checks/). RepoKit itself
+# The single source of truth for the external programs RepoKit
+# pins: the ones the LOCAL checks call (the scripts in
+# tools/checks/) and the CI-only ones the reusable gate workflow
+# installs (marked CI-only in their notes). RepoKit itself
 # ships only wiring — these programs are installed by the
 # development environment (e.g. the devbox image bakes them in at
-# build time, pinned from THIS file's values). When a check gains a
+# build time, pinned from THIS file's values) or by the workflow
+# at run time. The workflow keeps its own inline copies of its
+# pins (a workflow must be self-contained at its tag);
+# tools/check_pins.py verifies those copies agree with THIS
+# file, so a pin is only ever CHANGED here. When a check gains a
 # new external dependency, the change lands here in the same commit
 # as the check that needs it; environments compare this manifest
 # against what they actually installed and surface drift loudly
@@ -32,3 +38,5 @@
 gitleaks | binary | 8.30.1 | amd64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb;arm64=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | Secret scan (tools/checks/20-gitleaks.sh). Linux assets are named linux_x64 / linux_arm64. Checksums from the official v8.30.1 release checksums file, verified against the downloaded archives 2026-11-12. NOTE: CVE-2026-124039 names 8.30.2 as its fix version, but 8.30.2 was NOT published upstream as of 2026-11-12 (no tag, no release assets, no container image) — 8.30.1 is the newest published release. Bump version + both hashes here when 8.30.2 ships; environments pick the change up through their drift checker.
 shellcheck | binary | 0.11.0 | amd64=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198;arm64=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 | Shell lint (tools/checks/40-shellcheck.sh). Linux assets are named linux.x86_64 / linux.aarch64 (.tar.xz). Checksums computed from the official v0.11.0 release archives and cross-checked against an independent pinned copy, 2026-11-12.
 pre-commit-hooks | pip | 6.0.0 |  | File hygiene (tools/checks/30-file-hygiene.sh) — the pre-commit project's official hooks package; its console scripts (check-merge-conflict, check-yaml, end-of-file-fixer, trailing-whitespace-fixer, …) must be on PATH. Verified 2026-11-12: 6.0.0 is the current stable on PyPI and installs cleanly with all console scripts.
+zizmor | binary | 1.11.0 | amd64=da35e666827cbb1e6ca98b18b7969657b9f186467bfebfa25e730aac527c36f8;arm64=ce6d71e796b7d3663449151b08cee7c659f89bf36095c432e25169c857f479f0 | CI-only: workflow security audit (.github/workflows/gate.yml). Linux assets are named zizmor-x86_64-unknown-linux-gnu / zizmor-aarch64-unknown-linux-gnu (.tar.gz, the binary at the archive root). No upstream checksums file is published — checksums computed from the official v1.11.0 release archives 2026-11-19, and the amd64 binary run to verify (reports itself as zizmor 1.11.0; no findings on this repo's workflows). Up to v0.4.7 the workflow pip-installed zizmor with a version pin but no hash (pass 1 major 6).
+actionlint | binary | 1.7.7 | amd64=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757;arm64=401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0 | CI-only: workflow syntax/expression lint (.github/workflows/gate.yml). Checksums from the official actionlint_1.7.7_checksums.txt (the amd64 value cross-checked against the workflow's long-standing inline pin, 2026-11-19).

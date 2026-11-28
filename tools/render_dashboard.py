@@ -122,11 +122,20 @@ def parse_adrs(repo):
             # record — never render it as one.
             if "template" in name.lower():
                 continue
+            path = os.path.join(adr_dir, name)
             try:
-                with open(os.path.join(adr_dir, name),
-                          encoding="utf-8") as fh:
+                with open(path, encoding="utf-8") as fh:
                     record = json.load(fh)
-            except (ValueError, OSError):
+                if not isinstance(record, dict):
+                    raise ValueError("top level is not an object")
+            except (ValueError, OSError) as exc:
+                # Loud, not silent (v0.4.8, pass 3 minor): a
+                # malformed ADR used to vanish from the dashboard
+                # with no trace, so a real decision record could
+                # be missing and nobody would ever know.
+                print(f"render_dashboard: WARNING — {path} is not "
+                      f"a readable ADR record ({exc}); skipped",
+                      file=sys.stderr)
                 continue
             if record.get("id") == "ADR-000":
                 continue
@@ -171,12 +180,26 @@ a { color: inherit; }
 CITE_RX = re.compile(r"\((ns-\d+|dec-\d+)\)")
 
 
-def cited_steps(commits):
-    """Step IDs cited in any commit subject — a citation completes a step."""
+def cited_steps(repo):
+    """Step IDs cited in any commit subject — a citation completes
+    a step. Reads the WHOLE history itself (v0.4.8, pass 3 major):
+    up to v0.4.7 the citations were derived from the same
+    500-commit window the recent-activity display uses, so once a
+    project passed 500 commits, a step completed only by citation
+    silently flipped back to open on the dashboard. Subjects only,
+    so the unbounded read stays cheap; the newest citation wins,
+    as before."""
+    out = subprocess.run(
+        ["git", "-C", repo, "log", "--format=%s%x00%h"],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
     cited = {}
-    for c in commits:
-        for m in CITE_RX.finditer(c["subject"]):
-            cited.setdefault(m.group(1), c["sha"])
+    if out.returncode != 0:
+        return cited
+    for line in out.stdout.splitlines():
+        subject, _, sha = line.partition("\x00")
+        for m in CITE_RX.finditer(subject):
+            cited.setdefault(m.group(1), sha)
     return cited
 
 
@@ -278,7 +301,7 @@ def main(argv=None):
     repo = os.path.abspath(args.repo)
     meta = parse_public_yaml(os.path.join(repo, "project.public.yaml"))
     commits = git_log(repo, limit=500)
-    cited = cited_steps(commits)
+    cited = cited_steps(repo)
     plan = parse_plan(os.path.join(repo, "PLAN.md"))
     adrs = parse_adrs(repo)
     os.makedirs(args.out_dir, exist_ok=True)

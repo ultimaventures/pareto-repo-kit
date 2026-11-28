@@ -19,7 +19,11 @@ on:
         default: "ultimaventures/pareto-repo-kit"
       tooling_ref:
         type: string
-        default: "v0.1.0"
+        # The CURRENT release. A stale default silently runs old
+        # gate code (this sat at v0.1.0 through three releases —
+        # v0.4.2, reviewer round 2 item 4). Callers should pin
+        # explicitly; bump this default with each release.
+        default: "v0.4.8"
     secrets:
       GATE_PATTERNS:
         required: false
@@ -49,23 +53,68 @@ jobs:
         # v10 build). The CVE is a --report-path file-permissions issue;
         # this workflow uses --redact and no report path, so impact is
         # nil. Bump via tools/dependencies.txt when 8.30.2 ships.
+        # Downloads are verified (v0.4.2, reviewer round 2 item 9):
+        # curl -f so an HTTP error fails instead of saving an error
+        # page as the "tarball", and a pinned sha256 (from
+        # tools/dependencies.txt, taken from the official release
+        # checksums file) checked before anything is installed.
         run: |
-          curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           sudo install /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
       - name: Secret scan (full history, redacted)
-        run: gitleaks git --redact --verbose .
+        # The scan runs on the TOOLING's configuration, never the
+        # caller repo's (v0.4.7, round 6 item 4): a PR could
+        # otherwise suppress its own findings with its own
+        # .gitleaks.toml, .gitleaksignore, or inline
+        # gitleaks:allow comments — the same hole the local
+        # agent-mode leg closed in v0.4.4. A root .gitleaksignore
+        # in the caller repo fails the step outright (the flag
+        # alone may only ADD an ignore source in some modes).
+        # --text in the log-opts makes the scan attribute-immune:
+        # a -diff/binary attribute from any source no longer
+        # hides a file from the scan (round 6 item 3).
+        run: |
+          if [ -e .gitleaksignore ] || [ -L .gitleaksignore ]; then
+            # -L as well as -e (v0.4.8, pass 1 minor 9): a DANGLING
+            # symlink named .gitleaksignore fails -e but is still
+            # read by gitleaks if it resolves at scan time.
+            echo "::error::A .gitleaksignore at the repository root would let the scanned repo suppress findings. The gate does not accept one — suppressions live in the tooling checkout's ignore file, maintained by the gate's owner."
+            exit 1
+          fi
+          gitleaks git --redact --verbose --log-opts="--all --text" --config .repo-tooling/tools/gitleaks.toml --gitleaks-ignore-path .repo-tooling/tools/gitleaks-ignore --ignore-gitleaks-allow .
       - name: Workflow lint (zizmor + actionlint, pinned)
         # Only for repos that have workflows. Zizmor = security audit
         # (template injection, unpinned actions, excess permissions);
         # actionlint = syntax/expression correctness. Versions pinned;
-        # bump deliberately. (Pins verified live 2026-11-17: zizmor
-        # 1.11.0 via pip, actionlint 1.7.7 release tarball.)
+        # bump deliberately in tools/dependencies.txt (the manifest
+        # is the pins' home; tools/check_pins.py verifies the inline
+        # copies below agree with it).
         run: |
           if [ -d .github/workflows ]; then
-            pip install --quiet "zizmor==1.11.0"
-            curl -sL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz -o /tmp/actionlint.tgz
+            # Verified downloads (v0.4.2 item 9, as for gitleaks
+            # above): -f plus the pinned sha256 from
+            # tools/dependencies.txt, checked before anything is
+            # installed. Zizmor was pip-installed up to v0.4.7 —
+            # a version pin with no hash (v0.4.8, pass 1 major 6);
+            # it now comes from the official release binary, its
+            # checksum computed from the release archive (no
+            # upstream checksums file is published).
+            curl -fsSL https://github.com/zizmorcore/zizmor/releases/download/v1.11.0/zizmor-x86_64-unknown-linux-gnu.tar.gz -o /tmp/zizmor.tgz
+            echo "da35e666827cbb1e6ca98b18b7969657b9f186467bfebfa25e730aac527c36f8  /tmp/zizmor.tgz" | sha256sum -c -
+            # The zizmor archive's file member is ./zizmor (with
+            # the ./ prefix): naming a bare 'zizmor' extracts
+            # nothing (tar exits 2), and extracting the whole
+            # archive tries to restore the ./ directory entry's
+            # mode/timestamp onto /tmp itself, which the runner
+            # may not do (both found on live gate runs, ns-17).
+            # Name the member exactly as stored.
+            tar -xzf /tmp/zizmor.tgz -C /tmp ./zizmor
+            sudo install /tmp/zizmor /usr/local/bin/zizmor
+            curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz -o /tmp/actionlint.tgz
+            echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/actionlint.tgz" | sha256sum -c -
             tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
             sudo install /tmp/actionlint /usr/local/bin/actionlint
             zizmor --no-online-audits .github/workflows
@@ -83,17 +132,33 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           EVENT_BEFORE: ${{ github.event.before }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          IS_DEPENDABOT: ${{ github.actor == 'dependabot[bot]' }}
         run: |
-          if [ -n "$GATE_PATTERNS" ]; then
-            printf '%s\n' "$GATE_PATTERNS" > /tmp/gate-patterns.txt
-            export GATE_PATTERNS_FILE=/tmp/gate-patterns.txt
-          fi
+          # The pattern-source decision (secret present / fork or
+          # Dependabot PR / lapsed provisioning) lives in ONE
+          # helper, sourced so its exports land in this shell --
+          # self-gate's this-prs-gate sources the same file from
+          # the PR checkout (v0.4.8 fix pass, item 5 / choice A).
+          . .repo-tooling/tools/ci_pattern_setup.sh
           if [ "$EVENT_NAME" = "pull_request" ]; then
             RANGE="origin/${BASE_REF}..HEAD"
-          elif [ "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+          elif [ -n "$EVENT_BEFORE" ] && [ "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
             RANGE="${EVENT_BEFORE}..HEAD"
           else
-            RANGE="HEAD~1..HEAD"
+            # A branch's first push — or an event with no `before`
+            # at all (merge_group, workflow_dispatch, schedule: an
+            # empty EVENT_BEFORE used to produce the empty range
+            # "..HEAD" and a green job that checked nothing;
+            # v0.4.3, round 3 item 6b): scan the whole history,
+            # not just the tip commit (the pre-push hook's stdin
+            # logic is the local equivalent; v0.4.2 item 1). The
+            # check treats the empty-tree base as "from the root
+            # commit". The empty-tree id is DERIVED, not hard-coded
+            # (v0.4.8, pass 1 minor 8): the literal is the SHA-1
+            # empty tree, and a SHA-256 repository's differs.
+            EMPTY_TREE=$(git hash-object -t tree /dev/null)
+            RANGE="$EMPTY_TREE..HEAD"
           fi
           # Exits 1 only on hard pattern failures; format/plan items are
           # warnings and never fail the job.

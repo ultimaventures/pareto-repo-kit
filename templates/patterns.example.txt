@@ -1,22 +1,39 @@
 # patterns.example.txt — TEMPLATE for your private pattern list.
 #
 # HOW THIS WORKS
-#   1. Copy this file to `patterns.txt` IN YOUR LOCAL TOOLING CHECKOUT
-#      (the root of your Pareto Easy Repo Kit clone — NOT inside a project repo).
-#      The tooling repo's own .gitignore ignores `patterns.txt`, so it
-#      cannot be committed or pushed from there, and updating the tooling
-#      (git pull) never touches an untracked, ignored file — your list
-#      cannot be overwritten by the template or by an update.
+#   1. Copy this file to `patterns-relaxed.txt` IN YOUR LOCAL TOOLING
+#      CHECKOUT (the root of your Pareto Easy Repo Kit clone — NOT
+#      inside a project repo). Or skip the copying: `repo-kit setup`
+#      asks you a few questions and writes the file for you. The
+#      tooling repo's own .gitignore ignores `patterns-relaxed.txt`,
+#      so it cannot be committed or pushed from there, and updating
+#      the tooling (git pull) never touches an untracked, ignored
+#      file — your list cannot be overwritten by the template or by
+#      an update.
 #   2. Replace the commented examples below with YOUR values, one regular
 #      expression per line. Lines starting with # are comments. Matching
 #      is case-insensitive.
 #   3. The checks find it automatically at that location. To keep it
 #      somewhere else instead, point the environment variable at it:
-#          export GATE_PATTERNS_FILE=/path/to/patterns.txt
-#   4. For CI, paste the same file's contents into a repository secret
-#      named GATE_PATTERNS (per project repo). The list itself is
-#      sensitive — it is a map of what you want hidden — so it belongs in
-#      secrets and local files only, never in any committed file.
+#          export GATE_PATTERNS_FILE=/path/to/patterns-relaxed.txt
+#   4. For CI, `repo-kit provision` uploads this file's contents as
+#      the GATE_PATTERNS repository secret (per project repo). The
+#      list itself is sensitive — it is a map of what you want
+#      hidden — so it belongs in secrets and local files only, never
+#      in any committed file.
+#
+# THE OPTIONAL STRICT LIST
+#   If you want LOCAL checks to catch more than CI does, create a
+#   second file, `patterns-strict.txt`, beside the relaxed one (same
+#   format, same place) holding ONLY the extra patterns. Local checks
+#   load BOTH files and union their patterns — the strict file adds
+#   to the relaxed list, never replaces it, so you never duplicate
+#   entries and the two cannot drift apart when you edit one. It is
+#   never uploaded anywhere — provision only ever sends the relaxed
+#   list to GitHub — so it can safely hold broader patterns (names,
+#   places, project codenames) that would false-positive in a public
+#   repo's CI. No strict file? The relaxed list alone is used;
+#   nothing breaks.
 #
 # WHAT TO INCLUDE (recommendations — instance identifiers, the things
 # that are unique to YOUR machines/accounts and have no business in a
