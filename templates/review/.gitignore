@@ -1,0 +1,4 @@
+# Review packets and reviewer feedback are local-only working material:
+# generated from this repo's commits, reviewed elsewhere, never committed.
+*
+!.gitignore

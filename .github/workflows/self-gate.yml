@@ -5,6 +5,9 @@ name: Gate
 # self-*.yml files and call the reusables by local path. The reusable
 # still checks out the published tooling (this repo, at the pinned tag)
 # for its check scripts — exactly what a consumer repo experiences.
+# Alongside it (v0.4.8): a job that runs the checks from THIS checkout
+# on pull requests, and a job that runs the in-repo test suite — the
+# published-tag gate alone would never exercise a PR's own gate code.
 
 on:
   pull_request:
@@ -19,3 +22,77 @@ jobs:
     uses: ./.github/workflows/gate.yml
     secrets:
       GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}
+
+  this-prs-gate:
+    # The gate above checks this repo with the PUBLISHED tooling at
+    # the pinned tag — a consumer's experience, but not this PR's
+    # code (v0.4.8, pass 1 major 4: a PR that broke the gate itself
+    # would sail through behind the last good release). This job
+    # runs the checks FROM THIS CHECKOUT over the PR range, plus
+    # the pin-agreement check.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this PR (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned, verified — as in gate.yml)
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Install shellcheck (pinned, verified)
+        run: |
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o /tmp/shellcheck.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+      - name: Install pre-commit-hooks (pinned)
+        run: pip install --quiet "pre-commit-hooks==6.0.0"
+      - name: Pins agree
+        run: python3 tools/check_pins.py
+      - name: Run this checkout's checks over the PR range
+        env:
+          GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          IS_DEPENDABOT: ${{ github.actor == 'dependabot[bot]' }}
+        run: |
+          # The pattern-source decision is the reusable gate's,
+          # from the shared helper (v0.4.8 fix pass, item 5 /
+          # choice A): up to the fix pass this job carried only
+          # the secret-present branch, so a fork PR -- which can
+          # never read the secret -- hit the pattern tier with no
+          # list and no opt-out and ran red on a coverage gap.
+          . tools/ci_pattern_setup.sh
+          RANGE="origin/${BASE_REF}..HEAD"
+          for check in tools/checks/*.sh; do
+            echo "== $check (range: $RANGE)"
+            sh "$check" "$RANGE"
+          done
+
+  tests:
+    # The in-repo scenario/regression suite (v0.4.8, pass 1
+    # blocker 2) — runs on the PR checkout, so the code under
+    # review is the code under test.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install shellcheck (pinned, verified)
+        run: |
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o /tmp/shellcheck.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+      - name: Install pre-commit-hooks (pinned)
+        run: pip install --quiet "pre-commit-hooks==6.0.0"
+      - name: Run the in-repo suite
+        run: bash tests/run_tests.sh

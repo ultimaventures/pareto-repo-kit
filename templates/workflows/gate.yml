@@ -14,6 +14,10 @@ permissions:
 
 jobs:
   gate:
-    uses: ultimaventures/pareto-repo-kit/.github/workflows/gate.yml@v0.1.0
+    # Pin the CURRENT tooling release and bump it as the tooling
+    # releases — a stale pin silently runs old gate code (this
+    # template sat at v0.1.0 through three releases; found in the
+    # v0.4.2 reviewer round, item 4).
+    uses: ultimaventures/pareto-repo-kit/.github/workflows/gate.yml@v0.4.8
     secrets:
       GATE_PATTERNS: ${{ secrets.GATE_PATTERNS }}

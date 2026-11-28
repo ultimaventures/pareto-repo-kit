@@ -1,0 +1,4 @@
+# Deliberately empty. In agent mode 20-gitleaks.sh points
+# --gitleaks-ignore-path at this directory, so suppressions come
+# from the supervisor config (tools/gitleaks.toml), never from a
+# .gitleaksignore in the repository being scanned.

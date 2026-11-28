@@ -1,0 +1,35 @@
+# Agent-mode repo-kit integration for a containerised agent.
+# Merge these keys into the agent service in your compose file.
+# Assumes: the pattern service runs on the HOST (repo-kit
+# pattern-service, bound per the EXPOSURE ladder in the service's
+# docstring — loopback first on Docker Desktop / OrbStack, the
+# bridge address on Linux, 0.0.0.0 only when neither reaches), the
+# tooling checkout lives at ${REPO_TOOLING_DIR} on the host, and
+# the supervisor has run `repo-kit enforce on` in it (agent mode).
+services:
+  agent:
+    # Let the container reach the host-side pattern service.
+    # Docker Desktop provides host.docker.internal natively; on
+    # Linux the host-gateway mapping below provides it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # NO gate configuration is injected via environment (v0.4.3):
+    # in agent mode the gate does not read the shell at all —
+    # anything the agent's environment could set, the agent could
+    # fake. The service coordinates and the check profile live in
+    # hooks/enforced.env, written on the host by `repo-kit enforce
+    # on` and refreshed by each `repo-kit pattern-service` launch,
+    # and they reach the gate through the read-only hooks/ mount
+    # below. Never bake a token into an image or a committed file.
+    volumes:
+      # The enforcement core: the hook and the checks, mounted
+      # READ-ONLY, at the SAME absolute path as on the host — so a
+      # host-written core.hooksPath (see gitconfig.snippet) resolves
+      # verbatim inside the container, and the agent cannot edit,
+      # delete, or replace the hook it is gated by. The mode files
+      # (hooks/enforced.marker, hooks/enforced.env) ride in with
+      # the hooks/ mount, equally read-only.
+      # Mount hooks/ and tools/ ONLY: never the checkout root (the
+      # pattern lists live there and must never enter the container).
+      - "${REPO_TOOLING_DIR}/hooks:${REPO_TOOLING_DIR}/hooks:ro"
+      - "${REPO_TOOLING_DIR}/tools:${REPO_TOOLING_DIR}/tools:ro"

@@ -1,6 +1,11 @@
-# YOUR private pattern list lives at the tooling checkout root as
-# patterns.txt (copied from templates/patterns.example.txt). It is a map
-# of what you want hidden — it must never be committed, here or anywhere.
+# YOUR private pattern lists live at the tooling checkout root:
+# patterns-relaxed.txt (built by `repo-kit setup` from
+# templates/patterns.example.txt; uploaded by provision as the CI
+# GATE_PATTERNS secret) and the optional patterns-strict.txt
+# (local-only, never uploaded). Both are maps of what you want
+# hidden — they must never be committed, here or anywhere.
+patterns-relaxed.txt
+patterns-strict.txt
 patterns.txt
 patterns-*.local.txt
 *.local.txt
@@ -8,7 +13,18 @@ patterns-*.local.txt
 # Renderer output if run against this repo itself
 _site/
 
+# Python bytecode from local runs of the tools
+__pycache__/
+
 # >>> repo-tooling (managed block — repo-kit refreshes between the markers)
 _site/
 .repo-tooling/
 # <<< repo-tooling
+
+# Agent-mode state (v0.4.3): created by `repo-kit enforce on` (or
+# by the supervisor building an agent's container) and refreshed
+# by the pattern-service launcher. NEVER tracked — a fresh clone
+# is a personal install, and enforcement is a decision made on
+# the machine, not a file shipped in the repo.
+hooks/enforced.marker
+hooks/enforced.env
